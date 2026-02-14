@@ -1,0 +1,361 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %%
+#|default_exp test_routing
+
+# %%
+#|hide
+from nblite import nbl_export; nbl_export();
+
+# %% [markdown]
+# # Routing Tests
+#
+# Unit tests for URL parsing, Caddy config generation, and
+# deploy/remove logic (mocked SSH).
+
+# %%
+#|export
+from unittest.mock import MagicMock, patch, call
+
+from appgarden.routing import (
+    parse_url,
+    generate_caddy_config,
+    deploy_caddy_config,
+    remove_caddy_config,
+    render_template,
+    _collect_subdirectory_apps,
+    _caddy_file_path,
+    _domain_caddy_file_path,
+)
+
+# %% [markdown]
+# ## parse_url
+
+# %%
+#|export
+def test_parse_url_subdomain():
+    """Subdomain URL returns (domain, None)."""
+    domain, path = parse_url("myapp.apps.example.com")
+    assert domain == "myapp.apps.example.com"
+    assert path is None
+
+# %%
+#|export
+def test_parse_url_subdirectory():
+    """Subdirectory URL returns (domain, path)."""
+    domain, path = parse_url("apps.example.com/myapp")
+    assert domain == "apps.example.com"
+    assert path == "myapp"
+
+# %%
+#|export
+def test_parse_url_strips_protocol():
+    """parse_url strips https:// prefix."""
+    domain, path = parse_url("https://myapp.apps.example.com")
+    assert domain == "myapp.apps.example.com"
+    assert path is None
+
+# %%
+#|export
+def test_parse_url_strips_http():
+    """parse_url strips http:// prefix."""
+    domain, path = parse_url("http://apps.example.com/myapp")
+    assert domain == "apps.example.com"
+    assert path == "myapp"
+
+# %%
+#|export
+def test_parse_url_strips_trailing_slash():
+    """parse_url strips trailing slash."""
+    domain, path = parse_url("apps.example.com/myapp/")
+    assert domain == "apps.example.com"
+    assert path == "myapp"
+
+# %% [markdown]
+# ## generate_caddy_config — subdomain
+
+# %%
+#|export
+def test_generate_subdomain_reverse_proxy():
+    """Subdomain config generates reverse_proxy block."""
+    config = generate_caddy_config(
+        domain="myapp.apps.example.com", port=10000,
+    )
+    assert "myapp.apps.example.com" in config
+    assert "reverse_proxy localhost:10000" in config
+
+# %%
+#|export
+def test_generate_subdomain_static():
+    """Static subdomain config uses file_server."""
+    config = generate_caddy_config(
+        domain="docs.example.com",
+        method="static",
+        source_path="/srv/appgarden/apps/docs/source",
+    )
+    assert "docs.example.com" in config
+    assert "file_server" in config
+    assert "/srv/appgarden/apps/docs/source" in config
+    assert "try_files" in config
+
+# %% [markdown]
+# ## generate_caddy_config — subdirectory
+
+# %%
+#|export
+def test_generate_subdirectory_single():
+    """Single subdirectory app renders handle_path block."""
+    config = generate_caddy_config(
+        domain="apps.example.com", port=10000, path="myapp",
+    )
+    assert "apps.example.com" in config
+    assert "redir /myapp /myapp/" in config
+    assert "handle_path /myapp/*" in config
+    assert "reverse_proxy localhost:10000" in config
+    assert 'X-Forwarded-Prefix "/myapp"' in config
+
+# %%
+#|export
+def test_generate_subdirectory_merged():
+    """Multiple subdirectory apps merge into one config."""
+    apps = [
+        {"path": "app1", "port": 10000, "method": "command", "source_path": None},
+        {"path": "app2", "port": 10001, "method": "command", "source_path": None},
+    ]
+    config = generate_caddy_config(domain="apps.example.com", apps=apps)
+    assert "apps.example.com" in config
+    assert "handle_path /app1/*" in config
+    assert "handle_path /app2/*" in config
+    assert "reverse_proxy localhost:10000" in config
+    assert "reverse_proxy localhost:10001" in config
+
+# %%
+#|export
+def test_generate_subdirectory_static():
+    """Subdirectory static app uses file_server inside handle_path."""
+    apps = [
+        {"path": "docs", "port": None, "method": "static",
+         "source_path": "/srv/appgarden/apps/docs/source"},
+    ]
+    config = generate_caddy_config(domain="apps.example.com", apps=apps)
+    assert "handle_path /docs/*" in config
+    assert "file_server" in config
+    assert "/srv/appgarden/apps/docs/source" in config
+
+# %% [markdown]
+# ## deploy_caddy_config
+
+# %%
+#|export
+def test_deploy_caddy_config_subdomain():
+    """deploy_caddy_config writes a .caddy file and reloads Caddy for subdomain."""
+    host = MagicMock()
+    host.put_file.return_value = True
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    deploy_caddy_config(
+        host, app_name="myapp", domain="myapp.apps.example.com", port=10000,
+    )
+
+    # Should have written a file
+    put_calls = host.put_file.call_args_list
+    assert len(put_calls) == 1
+    remote_path = put_calls[0].kwargs["remote_filename"]
+    assert remote_path == _caddy_file_path("myapp")
+
+    # Should have reloaded Caddy
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("reload" in c and "caddy" in c for c in cmds)
+
+# %%
+#|export
+def test_deploy_caddy_config_subdirectory():
+    """deploy_caddy_config merges subdirectory apps into one domain file."""
+    host = MagicMock()
+    host.put_file.return_value = True
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    garden_state = {
+        "apps": {
+            "existing": {
+                "url": "apps.example.com/existing",
+                "port": 10000,
+                "method": "command",
+            },
+        },
+    }
+
+    deploy_caddy_config(
+        host, app_name="newapp", domain="apps.example.com",
+        port=10001, path="newapp",
+        garden_state=garden_state,
+    )
+
+    # Should write a merged domain config
+    put_calls = host.put_file.call_args_list
+    assert len(put_calls) == 1
+    remote_path = put_calls[0].kwargs["remote_filename"]
+    assert remote_path == _domain_caddy_file_path("apps.example.com")
+
+    # The written content should contain both apps
+    bio = put_calls[0].kwargs["filename_or_io"]
+    content = bio.getvalue().decode("utf-8")
+    assert "handle_path /existing/*" in content
+    assert "handle_path /newapp/*" in content
+
+# %% [markdown]
+# ## remove_caddy_config
+
+# %%
+#|export
+def test_remove_caddy_config_subdomain():
+    """remove_caddy_config removes the .caddy file and reloads."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    remove_caddy_config(host, app_name="myapp", domain="myapp.apps.example.com")
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("rm -f" in c and "myapp.caddy" in c for c in cmds)
+    assert any("reload" in c and "caddy" in c for c in cmds)
+
+# %%
+#|export
+def test_remove_caddy_config_subdirectory_with_remaining():
+    """remove_caddy_config regenerates merged config without the removed app."""
+    host = MagicMock()
+    host.put_file.return_value = True
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    garden_state = {
+        "apps": {
+            "app1": {"url": "apps.example.com/app1", "port": 10000, "method": "command"},
+            "app2": {"url": "apps.example.com/app2", "port": 10001, "method": "command"},
+        },
+    }
+
+    remove_caddy_config(
+        host, app_name="app1", domain="apps.example.com",
+        path="app1", garden_state=garden_state,
+    )
+
+    # Should rewrite the file with only app2
+    put_calls = host.put_file.call_args_list
+    assert len(put_calls) == 1
+    bio = put_calls[0].kwargs["filename_or_io"]
+    content = bio.getvalue().decode("utf-8")
+    assert "handle_path /app2/*" in content
+    assert "handle_path /app1/*" not in content
+
+# %%
+#|export
+def test_remove_caddy_config_subdirectory_last_app():
+    """remove_caddy_config deletes the domain file when the last app is removed."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    garden_state = {
+        "apps": {
+            "onlyapp": {"url": "apps.example.com/onlyapp", "port": 10000, "method": "command"},
+        },
+    }
+
+    remove_caddy_config(
+        host, app_name="onlyapp", domain="apps.example.com",
+        path="onlyapp", garden_state=garden_state,
+    )
+
+    # Should rm the file (not write it)
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("rm -f" in c for c in cmds)
+    assert host.put_file.call_count == 0
+
+# %% [markdown]
+# ## _collect_subdirectory_apps
+
+# %%
+#|export
+def test_collect_subdirectory_apps():
+    """_collect_subdirectory_apps filters by domain and subdirectory routing."""
+    garden_state = {
+        "apps": {
+            "sub1": {"url": "apps.example.com/sub1", "port": 10000, "method": "command"},
+            "sub2": {"url": "apps.example.com/sub2", "port": 10001, "method": "dockerfile"},
+            "other": {"url": "other.example.com", "port": 10002, "method": "command"},
+            "subother": {"url": "other.example.com/foo", "port": 10003, "method": "static"},
+        },
+    }
+    apps = _collect_subdirectory_apps(garden_state, "apps.example.com")
+    assert len(apps) == 2
+    names = {a["name"] for a in apps}
+    assert names == {"sub1", "sub2"}
+
+# %% [markdown]
+# ## render_template
+
+# %%
+#|export
+def test_render_systemd_template():
+    """render_template renders systemd.service.j2 correctly."""
+    content = render_template(
+        "systemd.service.j2",
+        name="myapp",
+        method="command",
+        working_dir="/srv/appgarden/apps/myapp/source",
+        env_file="/srv/appgarden/apps/myapp/.env",
+        env_vars={"PORT": "10000"},
+        exec_start="/usr/bin/python3 app.py",
+        exec_stop=None,
+    )
+    assert "[Unit]" in content
+    assert "AppGarden: myapp" in content
+    assert "PORT=10000" in content
+    assert "/usr/bin/python3 app.py" in content
+    assert "EnvironmentFile=" in content
+
+# %%
+#|export
+def test_render_docker_compose_template():
+    """render_template renders docker-compose.yml.j2 correctly."""
+    content = render_template(
+        "docker-compose.yml.j2",
+        port=10000,
+        container_port=3000,
+        env_file=".env",
+        volumes=None,
+    )
+    assert "10000:3000" in content
+    assert "restart: unless-stopped" in content
+
+# %%
+#|export
+def test_render_dockerfile_template():
+    """render_template renders Dockerfile.j2 correctly."""
+    content = render_template(
+        "Dockerfile.j2",
+        base_image="node:20-slim",
+        copy_first="package*.json",
+        setup_cmd="npm ci --production",
+        container_port=3000,
+        cmd='["node", "server.js"]',
+    )
+    assert "FROM node:20-slim" in content
+    assert "COPY package*.json ." in content
+    assert "RUN npm ci --production" in content
+    assert "EXPOSE 3000" in content

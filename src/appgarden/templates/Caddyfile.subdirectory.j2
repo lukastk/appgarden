@@ -1,0 +1,16 @@
+{{ domain }} {
+{% for app in apps %}
+    redir /{{ app.path }} /{{ app.path }}/
+    handle_path /{{ app.path }}/* {
+{% if app.method == "static" %}
+        root * {{ app.source_path }}
+        file_server
+        try_files {path} /index.html
+{% else %}
+        reverse_proxy localhost:{{ app.port }} {
+            header_up X-Forwarded-Prefix "/{{ app.path }}"
+        }
+{% endif %}
+    }
+{% endfor %}
+}

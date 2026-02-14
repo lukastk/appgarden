@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "{{ port }}:{{ container_port }}"
+    restart: unless-stopped
+{% if env_file %}
+    env_file:
+      - .env
+{% endif %}
+{% if volumes %}
+    volumes:
+{% for vol in volumes %}
+      - {{ vol }}
+{% endfor %}
+{% endif %}

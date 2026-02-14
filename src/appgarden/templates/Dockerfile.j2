@@ -1,0 +1,16 @@
+FROM {{ base_image }}
+
+WORKDIR /app
+
+{% if copy_first %}
+COPY {{ copy_first }} .
+{% endif %}
+{% if setup_cmd %}
+RUN {{ setup_cmd }}
+{% endif %}
+
+COPY . .
+
+EXPOSE {{ container_port }}
+
+CMD {{ cmd }}

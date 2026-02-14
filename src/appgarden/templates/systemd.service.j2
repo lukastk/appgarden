@@ -1,0 +1,27 @@
+[Unit]
+Description=AppGarden: {{ name }}
+{% if method in ("dockerfile", "docker-compose") %}
+After=network.target docker.service
+Requires=docker.service
+{% else %}
+After=network.target
+{% endif %}
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+WorkingDirectory={{ working_dir }}
+{% if env_file %}
+EnvironmentFile={{ env_file }}
+{% endif %}
+{% for key, value in env_vars.items() %}
+Environment={{ key }}={{ value }}
+{% endfor %}
+ExecStart={{ exec_start }}
+{% if exec_stop %}
+ExecStop={{ exec_stop }}
+{% endif %}
+
+[Install]
+WantedBy=multi-user.target
