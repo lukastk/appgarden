@@ -53,9 +53,22 @@ def _make_server():
 def _mock_host():
     """Create a mock host with standard return values."""
     host = MagicMock()
-    output_mock = MagicMock()
-    output_mock.stdout = ""
-    host.run_shell_command.return_value = (True, output_mock)
+
+    def _mock_run(command="", **kw):
+        output = MagicMock()
+        # Handle flock commands that read state files
+        if "flock" in command and "cat" in command:
+            if "ports.json" in command:
+                output.stdout = json.dumps({"next_port": 10000, "allocated": {}})
+            elif "garden.json" in command:
+                output.stdout = json.dumps({"apps": {}})
+            else:
+                output.stdout = ""
+        else:
+            output.stdout = ""
+        return (True, output)
+
+    host.run_shell_command.side_effect = _mock_run
     host.put_file.return_value = True
 
     def _mock_get(remote_filename, filename_or_io, **kw):
@@ -191,7 +204,7 @@ def test_deploy_static_git_with_branch():
     cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
     clone_cmds = [c for c in cmds if "git clone" in c]
     assert len(clone_cmds) == 1
-    assert "-b gh-pages" in clone_cmds[0]
+    assert "-b" in clone_cmds[0] and "gh-pages" in clone_cmds[0]
 
 # %% pts/tests/test_deploy.pct.py 16
 def test_deploy_static_registers_in_garden():
@@ -258,7 +271,7 @@ def test_deploy_command_creates_systemd_unit():
     assert len(unit_files) == 1
     unit_content = written[unit_files[0]]
     assert "python app.py" in unit_content
-    assert "PORT=10000" in unit_content
+    assert '"PORT=10000"' in unit_content
 
     # Should have registered with method=command
     garden_files = [p for p in written if "garden.json" in p]
@@ -286,11 +299,11 @@ def test_deploy_command_with_env():
     # Should have written .env file
     env_files = [p for p in written if p.endswith("/.env")]
     assert len(env_files) == 1
-    assert "SECRET=abc123" in written[env_files[0]]
+    assert 'SECRET="abc123"' in written[env_files[0]]
 
-    # Should have chmod 600
+    # Should have created file with restrictive permissions
     cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
-    assert any("chmod 600" in c for c in cmds)
+    assert any("install -m 600" in c for c in cmds)
 
 # %% pts/tests/test_deploy.pct.py 23
 def test_deploy_docker_compose_creates_systemd():

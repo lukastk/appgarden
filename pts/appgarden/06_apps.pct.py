@@ -21,6 +21,7 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
+import shlex
 from dataclasses import dataclass
 
 from rich.console import Console
@@ -80,7 +81,7 @@ def list_apps_with_status(host, ctx: RemoteContext | None = None) -> list[AppInf
         else:
             unit = _systemd_unit_name(app.name)
             try:
-                result = run_sudo_command(host, f"systemctl is-active {unit}", ctx=ctx)
+                result = run_sudo_command(host, f"systemctl is-active {shlex.quote(unit)}", ctx=ctx)
                 app.status = result.strip()
             except RuntimeError:
                 app.status = "inactive"
@@ -120,7 +121,7 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
     else:
         unit = _systemd_unit_name(name)
         try:
-            result = run_sudo_command(host, f"systemctl is-active {unit}", ctx=ctx)
+            result = run_sudo_command(host, f"systemctl is-active {shlex.quote(unit)}", ctx=ctx)
             status = result.strip()
         except RuntimeError:
             status = "inactive"
@@ -146,21 +147,21 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
 def stop_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Stop an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl stop {unit}", ctx=ctx)
+    run_sudo_command(host, f"systemctl stop {shlex.quote(unit)}", ctx=ctx)
 
 # %%
 #|export
 def start_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Start an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl start {unit}", ctx=ctx)
+    run_sudo_command(host, f"systemctl start {shlex.quote(unit)}", ctx=ctx)
 
 # %%
 #|export
 def restart_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Restart an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl restart {unit}", ctx=ctx)
+    run_sudo_command(host, f"systemctl restart {shlex.quote(unit)}", ctx=ctx)
 
 # %% [markdown]
 # ## app_logs
@@ -175,7 +176,7 @@ def app_logs(host, name: str, lines: int = 50, follow: bool = False, ctx: Remote
     Returns the log output as a string.
     """
     unit = _systemd_unit_name(name)
-    cmd = f"journalctl -u {unit} --no-pager -n {lines}"
+    cmd = f"journalctl -u {shlex.quote(unit)} --no-pager -n {int(lines)}"
     return run_sudo_command(host, cmd, ctx=ctx, timeout=30)
 
 # %% [markdown]
@@ -200,15 +201,15 @@ def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | No
     if method != "static":
         unit = _systemd_unit_name(name)
         try:
-            run_sudo_command(host, f"systemctl stop {unit}", ctx=ctx)
+            run_sudo_command(host, f"systemctl stop {shlex.quote(unit)}", ctx=ctx)
         except RuntimeError:
             pass
         try:
-            run_sudo_command(host, f"systemctl disable {unit}", ctx=ctx)
+            run_sudo_command(host, f"systemctl disable {shlex.quote(unit)}", ctx=ctx)
         except RuntimeError:
             pass
         # Remove unit file
-        run_sudo_command(host, f"rm -f {SYSTEMD_UNIT_DIR}/{unit}", ctx=ctx)
+        run_sudo_command(host, f"rm -f {shlex.quote(f'{SYSTEMD_UNIT_DIR}/{unit}')}", ctx=ctx)
         run_sudo_command(host, "systemctl daemon-reload", ctx=ctx)
 
     # 2. Remove Caddy config
@@ -231,9 +232,9 @@ def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | No
     if keep_data:
         # Remove everything except data/
         run_remote_command(host,
-            f"find {adir} -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {{}} +")
+            f"find {shlex.quote(adir)} -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {{}} +")
     else:
-        run_remote_command(host, f"rm -rf {adir}")
+        run_remote_command(host, f"rm -rf {shlex.quote(adir)}")
 
 # %% [markdown]
 # ## redeploy_app
@@ -261,9 +262,9 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
         console.print("  [dim]Pulling latest changes...[/dim]")
         branch = entry.get("branch")
         if branch:
-            run_remote_command(host, f"cd {source_path} && git pull origin {branch}", timeout=120)
+            run_remote_command(host, f"cd {shlex.quote(source_path)} && git pull origin {shlex.quote(branch)}", timeout=120)
         else:
-            run_remote_command(host, f"cd {source_path} && git pull", timeout=120)
+            run_remote_command(host, f"cd {shlex.quote(source_path)} && git pull", timeout=120)
     elif source_type == "local" and source:
         console.print("  [dim]Re-uploading source...[/dim]")
         upload_directory(server, source, source_path)
@@ -272,13 +273,13 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
     if method in ("dockerfile", "auto"):
         image_name = f"appgarden-{name}"
         console.print("  [dim]Rebuilding Docker image...[/dim]")
-        run_remote_command(host, f"docker build -t {image_name} {source_path}", timeout=600)
+        run_remote_command(host, f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}", timeout=600)
 
     # 3. Restart service (if not static)
     if method != "static":
         unit = _systemd_unit_name(name)
         console.print("  [dim]Restarting service...[/dim]")
-        run_sudo_command(host, f"systemctl restart {unit}", ctx=ctx)
+        run_sudo_command(host, f"systemctl restart {shlex.quote(unit)}", ctx=ctx)
     else:
         # Static: Caddy serves files directly, just reload
         run_sudo_command(host, "systemctl reload caddy", ctx=ctx)

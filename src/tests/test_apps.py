@@ -57,9 +57,22 @@ def _mock_host(garden_state=None, ports_state=None):
         ports_state = {"next_port": 10001, "allocated": {"10000": "myapp"}}
 
     host = MagicMock()
-    output_mock = MagicMock()
-    output_mock.stdout = ""
-    host.run_shell_command.return_value = (True, output_mock)
+
+    def _mock_run(command="", **kw):
+        output = MagicMock()
+        # Handle flock commands that read state files
+        if "flock" in command and "cat" in command:
+            if "ports.json" in command:
+                output.stdout = json.dumps(ports_state)
+            elif "garden.json" in command:
+                output.stdout = json.dumps(garden_state)
+            else:
+                output.stdout = ""
+        else:
+            output.stdout = ""
+        return (True, output)
+
+    host.run_shell_command.side_effect = _mock_run
     host.put_file.return_value = True
 
     def _mock_get(remote_filename, filename_or_io, **kw):
@@ -113,10 +126,15 @@ def test_app_status_static():
 def test_app_status_service():
     """app_status for non-static app checks systemctl."""
     host = _mock_host()
-    # Mock systemctl is-active to return "active"
-    active_output = MagicMock()
-    active_output.stdout = "active"
-    host.run_shell_command.return_value = (True, active_output)
+    # Wrap existing side_effect to also return "active" for systemctl
+    original_side_effect = host.run_shell_command.side_effect
+    def _mock_run(command="", **kw):
+        if "systemctl is-active" in command:
+            output = MagicMock()
+            output.stdout = "active"
+            return (True, output)
+        return original_side_effect(command=command, **kw)
+    host.run_shell_command.side_effect = _mock_run
 
     status = app_status(host, "myapp")
     assert status.name == "myapp"

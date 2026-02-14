@@ -4,6 +4,7 @@ __all__ = ['TUNNELS_STATE_FILE', 'TunnelInfo', 'cleanup_stale_tunnels', 'close_t
 
 # %% pts/appgarden/09_tunnel.pct.py 3
 import json
+import shlex
 import signal
 import subprocess
 import sys
@@ -75,7 +76,7 @@ def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None)
     """Remove a tunnel's Caddy config and reload."""
     caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     try:
-        run_remote_command(host, f"rm -f {caddy_path}")
+        run_remote_command(host, f"rm -f {shlex.quote(caddy_path)}")
         run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
     except RuntimeError:
         pass
@@ -138,7 +139,7 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
         "ssh", "-N",
         "-R", f"{remote_port}:localhost:{local_port}",
         "-i", server.ssh_key,
-        "-o", "StrictHostKeyChecking=no",
+        "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
         f"{server.ssh_user}@{host_ip}",
@@ -193,6 +194,7 @@ def cleanup_stale_tunnels(server: ServerConfig) -> list[str]:
             remote_port = data.get("remote_port")
             if remote_port is None:
                 continue
+            remote_port = int(remote_port)
             # Check if anything is listening on the remote port
             try:
                 result = run_remote_command(

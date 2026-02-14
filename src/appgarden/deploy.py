@@ -4,6 +4,7 @@ __all__ = ['SYSTEMD_UNIT_DIR', 'console', 'deploy_command', 'deploy_docker_compo
 
 # %% pts/appgarden/05_deploy.pct.py 3
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .remote import (
     read_garden_state, write_garden_state, upload_directory,
     run_sudo_command, write_system_file,
     app_dir as _ctx_app_dir, source_dir as _ctx_source_dir,
+    validate_branch, validate_env_key,
 )
 from .ports import allocate_port
 from .routing import parse_url, deploy_caddy_config, render_template
@@ -58,13 +60,15 @@ def upload_source(
     Returns ``"local"`` or ``"git"`` indicating the source type.
     """
     remote_source = _source_dir(name, ctx)
-    run_remote_command(host, f"mkdir -p {remote_source}")
+    run_remote_command(host, f"mkdir -p {shlex.quote(remote_source)}")
 
     if is_git_url(source):
-        branch_flag = f"-b {branch}" if branch else ""
+        if branch:
+            validate_branch(branch)
+        branch_flag = f"-b {shlex.quote(branch)}" if branch else ""
         run_remote_command(
             host,
-            f"rm -rf {remote_source} && git clone {branch_flag} {source} {remote_source}",
+            f"rm -rf {shlex.quote(remote_source)} && git clone {branch_flag} {shlex.quote(source)} {shlex.quote(remote_source)}",
             timeout=120,
         )
         return "git"
@@ -130,11 +134,15 @@ def _write_env_file(
         content = Path(env_file).read_text()
     if env_vars:
         for k, v in env_vars.items():
-            content += f"{k}={v}\n"
+            validate_env_key(k)
+            # Quote values to prevent shell interpretation
+            escaped_v = v.replace("\\", "\\\\").replace('"', '\\"')
+            content += f'{k}="{escaped_v}"\n'
 
     remote_path = f"{_app_dir(name, ctx)}/.env"
+    # Create file with restrictive permissions before writing content
+    run_remote_command(host, f"install -m 600 /dev/null {shlex.quote(remote_path)}")
     write_remote_file(host, remote_path, content)
-    run_remote_command(host, f"chmod 600 {remote_path}")
     return remote_path
 
 # %% pts/appgarden/05_deploy.pct.py 15
@@ -151,8 +159,8 @@ def _deploy_systemd_unit(host, name: str, unit_content: str, ctx: RemoteContext 
     unit_path = f"{SYSTEMD_UNIT_DIR}/{unit_name}"
     write_system_file(host, unit_path, unit_content, ctx=ctx)
     run_sudo_command(host, "systemctl daemon-reload", ctx=ctx)
-    run_sudo_command(host, f"systemctl enable {unit_name}", ctx=ctx)
-    run_sudo_command(host, f"systemctl restart {unit_name}", ctx=ctx)
+    run_sudo_command(host, f"systemctl enable {shlex.quote(unit_name)}", ctx=ctx)
+    run_sudo_command(host, f"systemctl restart {shlex.quote(unit_name)}", ctx=ctx)
     return unit_name
 
 # %% pts/appgarden/05_deploy.pct.py 18
@@ -222,7 +230,7 @@ def deploy_command(
     console.print(f"[bold]Deploying command app[/bold] '{name}' → {url}")
 
     with ssh_connect(server) as host:
-        run_remote_command(host, f"mkdir -p {_app_dir(name, ctx)}")
+        run_remote_command(host, f"mkdir -p {shlex.quote(_app_dir(name, ctx))}")
 
         # Upload source if provided
         source_type = None
@@ -293,13 +301,16 @@ def deploy_docker_compose(
         # Upload source (docker-compose.yml lives in the app dir root)
         console.print("  [dim]Uploading source...[/dim]")
         adir = _app_dir(name, ctx)
-        run_remote_command(host, f"mkdir -p {adir}")
+        run_remote_command(host, f"mkdir -p {shlex.quote(adir)}")
 
         if is_git_url(source):
-            branch_flag = f"-b {branch}" if branch else ""
+            if branch:
+                validate_branch(branch)
+            branch_flag = f"-b {shlex.quote(branch)}" if branch else ""
+            source_path = f"{adir}/source"
             run_remote_command(
                 host,
-                f"rm -rf {adir}/source && git clone {branch_flag} {source} {adir}/source",
+                f"rm -rf {shlex.quote(source_path)} && git clone {branch_flag} {shlex.quote(source)} {shlex.quote(source_path)}",
                 timeout=120,
             )
             source_type = "git"
@@ -382,7 +393,7 @@ def deploy_dockerfile(
         console.print("  [dim]Building Docker image...[/dim]")
         run_remote_command(
             host,
-            f"docker build -t {image_name} {source_path}",
+            f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}",
             timeout=600,
         )
 

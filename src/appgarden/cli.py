@@ -21,7 +21,10 @@ from .apps import (
     stop_app, start_app, restart_app,
     remove_app, redeploy_app, app_logs,
 )
-from .remote import ssh_connect
+from .remote import (
+    ssh_connect,
+    validate_app_name, validate_domain, validate_url_path, validate_branch, validate_env_key,
+)
 from .environments import load_project_config, resolve_environment, resolve_all_environments
 from .tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_stale_tunnels
 
@@ -106,6 +109,7 @@ def server_add(
     app_root: Optional[str] = typer.Option(None, "--app-root", help="App root directory on server (default: /srv/appgarden)"),
 ):
     """Add a server to the configuration."""
+    validate_domain(domain)
     if not host and not (hcloud_name and hcloud_context):
         console.print("[red]Error:[/red] Provide either --host or both --hcloud-name and --hcloud-context")
         raise typer.Exit(code=1)
@@ -222,6 +226,7 @@ def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
         if "=" not in item:
             raise typer.BadParameter(f"Invalid env format: '{item}' (expected KEY=VALUE)")
         k, v = item.split("=", 1)
+        validate_env_key(k)
         result[k] = v
     return result
 
@@ -308,6 +313,8 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
 
 def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> None:
     """Execute a deploy from resolved cascaded params."""
+    validate_app_name(app_name)
+
     server_name = params.get("server")
     try:
         sname, srv = get_server(cfg, server_name)
@@ -323,10 +330,23 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         if subdomain:
             url = f"{subdomain}.{base_domain}"
         elif path_prefix:
+            validate_url_path(path_prefix)
             url = f"{base_domain}/{path_prefix}"
     if not url:
         console.print("[red]Error:[/red] --url, --subdomain, or --path is required")
         raise typer.Exit(code=1)
+
+    # Validate URL components
+    from .routing import parse_url
+    url_domain, url_path = parse_url(url)
+    validate_domain(url_domain)
+    if url_path:
+        validate_url_path(url_path)
+
+    # Validate branch if provided
+    branch = params.get("branch")
+    if branch:
+        validate_branch(branch)
 
     method = params.get("method", "static")
 
@@ -462,6 +482,7 @@ def apps_status(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
 ):
     """Show detailed status for an app."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -503,6 +524,7 @@ def apps_stop(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
 ):
     """Stop an app."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -521,6 +543,7 @@ def apps_start(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
 ):
     """Start an app."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -539,6 +562,7 @@ def apps_restart(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
 ):
     """Restart an app."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -558,6 +582,7 @@ def apps_logs(
     lines: int = typer.Option(50, "--lines", "-n", help="Number of log lines"),
 ):
     """Show logs for an app."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -578,6 +603,7 @@ def apps_remove(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
     """Remove an app and all its resources."""
+    validate_app_name(name)
     if not yes:
         confirm = typer.confirm(f"Remove app '{name}'? This cannot be undone.")
         if not confirm:
@@ -606,6 +632,7 @@ def apps_redeploy(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
 ):
     """Redeploy an app (update source, rebuild, restart)."""
+    validate_app_name(name)
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)

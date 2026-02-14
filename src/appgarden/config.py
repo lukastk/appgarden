@@ -3,6 +3,7 @@
 __all__ = ['AppGardenConfig', 'ServerConfig', 'config_dir', 'config_path', 'get_server', 'load_config', 'resolve_host', 'save_config']
 
 # %% pts/appgarden/00_config.pct.py 3
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass, field, asdict
@@ -92,6 +93,7 @@ def save_config(config: AppGardenConfig, path: Path | None = None) -> None:
 
     with open(p, "wb") as f:
         tomli_w.dump(raw, f)
+    os.chmod(p, 0o600)
 
 # %% pts/appgarden/00_config.pct.py 14
 def resolve_host(server: ServerConfig) -> str:

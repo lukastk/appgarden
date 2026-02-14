@@ -3,6 +3,8 @@
 __all__ = ['CADDY_APPS_DIR', 'CADDY_TUNNELS_DIR', 'TEMPLATES_DIR', 'deploy_caddy_config', 'generate_caddy_config', 'parse_url', 'remove_caddy_config', 'render_template']
 
 # %% pts/appgarden/03_routing.pct.py 3
+import re
+import shlex
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -12,6 +14,7 @@ from .remote import (
     ssh_connect, read_remote_file, write_remote_file,
     run_remote_command, read_garden_state,
     run_sudo_command, caddy_apps_dir, caddy_tunnels_dir,
+    validate_domain, validate_url_path,
 )
 from .config import ServerConfig
 
@@ -65,6 +68,14 @@ def generate_caddy_config(
     pass *apps* (list of dicts with keys ``path``, ``port``, ``method``,
     ``source_path``) to render a merged config.
     """
+    validate_domain(domain)
+    if path is not None:
+        validate_url_path(path)
+    if apps is not None:
+        for a in apps:
+            if a.get("path"):
+                validate_url_path(a["path"])
+
     # Subdirectory: merged config for one or more apps on the same domain
     if apps is not None:
         tmpl = _jinja_env.get_template("Caddyfile.subdirectory.j2")
@@ -97,7 +108,7 @@ def _caddy_file_path(app_name: str, ctx: RemoteContext | None = None) -> str:
 # %% pts/appgarden/03_routing.pct.py 11
 def _domain_caddy_file_path(domain: str, ctx: RemoteContext | None = None) -> str:
     """Return the remote path for a domain's merged subdirectory Caddy config."""
-    safe_domain = domain.replace(".", "_")
+    safe_domain = re.sub(r'[^a-zA-Z0-9_]', '_', domain)
     return f"{caddy_apps_dir(ctx)}/_subdir_{safe_domain}.caddy"
 
 # %% pts/appgarden/03_routing.pct.py 12
@@ -189,11 +200,11 @@ def remove_caddy_config(
             config = generate_caddy_config(domain=domain, apps=apps)
             write_remote_file(host, remote_path, config)
         else:
-            run_remote_command(host, f"rm -f {remote_path}")
+            run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
     else:
         # Subdomain: just remove the file
         remote_path = _caddy_file_path(app_name, ctx)
-        run_remote_command(host, f"rm -f {remote_path}")
+        run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
 
     run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
 

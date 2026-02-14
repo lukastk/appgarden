@@ -21,6 +21,7 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass, field, asdict
@@ -125,6 +126,7 @@ def save_config(config: AppGardenConfig, path: Path | None = None) -> None:
 
     with open(p, "wb") as f:
         tomli_w.dump(raw, f)
+    os.chmod(p, 0o600)
 
 # %% [markdown]
 # ## Host resolution

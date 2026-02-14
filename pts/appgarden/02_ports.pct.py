@@ -31,7 +31,10 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
-from appgarden.remote import read_ports_state, write_ports_state
+from appgarden.remote import (
+    read_ports_state, write_ports_state,
+    read_ports_state_locked, write_ports_state_locked,
+)
 
 # %% [markdown]
 # ## Constants
@@ -110,26 +113,26 @@ def _register_port(ports: dict, port: int, app_name: str) -> dict:
 #|export
 def allocate_port(host, app_name: str) -> int:
     """Allocate a port on the remote server for *app_name*."""
-    ports = read_ports_state(host)
+    ports = read_ports_state_locked(host)
     ports, port = _allocate_port(ports, app_name)
-    write_ports_state(host, ports)
+    write_ports_state_locked(host, ports)
     return port
 
 # %%
 #|export
 def release_port(host, app_name: str) -> None:
     """Release the port held by *app_name* on the remote server."""
-    ports = read_ports_state(host)
+    ports = read_ports_state_locked(host)
     ports = _release_port(ports, app_name)
-    write_ports_state(host, ports)
+    write_ports_state_locked(host, ports)
 
 # %%
 #|export
 def register_port(host, port: int, app_name: str) -> None:
     """Register a user-specified *port* for *app_name* on the remote server."""
-    ports = read_ports_state(host)
+    ports = read_ports_state_locked(host)
     ports = _register_port(ports, port, app_name)
-    write_ports_state(host, ports)
+    write_ports_state_locked(host, ports)
 
 # %%
 #|export

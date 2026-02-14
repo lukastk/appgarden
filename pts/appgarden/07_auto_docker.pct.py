@@ -128,6 +128,8 @@ def generate_dockerfile(
 
 # %%
 #|export
+import shlex
+
 from appgarden.config import ServerConfig
 from appgarden.remote import (
     APPGARDEN_ROOT, RemoteContext, make_remote_context,
@@ -179,7 +181,7 @@ def deploy_auto(
             # Try detecting from remote
             for indicator, rt in RUNTIMES:
                 try:
-                    run_remote_command(host, f"test -f {source_path}/{indicator}")
+                    run_remote_command(host, f"test -f {shlex.quote(f'{source_path}/{indicator}')}")
                     runtime = rt
                     break
                 except RuntimeError:
@@ -210,7 +212,7 @@ def deploy_auto(
         console.print("  [dim]Building Docker image...[/dim]")
         run_remote_command(
             host,
-            f"docker build -t {image_name} {source_path}",
+            f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}",
             timeout=600,
         )
 

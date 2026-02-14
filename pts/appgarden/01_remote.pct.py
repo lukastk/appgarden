@@ -21,6 +21,8 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 import json
+import re
+import shlex
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO, StringIO
@@ -98,6 +100,50 @@ def tunnels_state_path(ctx: RemoteContext | None = None) -> str:
     return f"{root}/tunnels/active.json"
 
 # %% [markdown]
+# ## Input validation
+#
+# Centralised validators for user-provided strings that end up in
+# shell commands, file paths, or config templates.
+
+# %%
+#|export
+_APP_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*\Z')
+_DOMAIN_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\Z')
+_PATH_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*\Z')
+_BRANCH_RE = re.compile(r'^[a-zA-Z0-9._/-]+\Z')
+_ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\Z')
+
+def validate_app_name(name: str) -> str:
+    """Validate an app name for use in paths and shell commands."""
+    if not _APP_NAME_RE.match(name) or '..' in name:
+        raise ValueError(f"Invalid app name '{name}': must start with alphanumeric, contain only [a-zA-Z0-9._-], no '..'")
+    return name
+
+def validate_domain(domain: str) -> str:
+    """Validate a domain name."""
+    if not _DOMAIN_RE.match(domain) or len(domain) > 253:
+        raise ValueError(f"Invalid domain '{domain}'")
+    return domain
+
+def validate_url_path(path: str) -> str:
+    """Validate a URL path segment (no slashes, dots, or special chars)."""
+    if not _PATH_RE.match(path):
+        raise ValueError(f"Invalid URL path '{path}': must match [a-zA-Z0-9_-]")
+    return path
+
+def validate_branch(branch: str) -> str:
+    """Validate a git branch name."""
+    if not _BRANCH_RE.match(branch) or '..' in branch:
+        raise ValueError(f"Invalid branch '{branch}'")
+    return branch
+
+def validate_env_key(key: str) -> str:
+    """Validate an environment variable key."""
+    if not _ENV_KEY_RE.match(key):
+        raise ValueError(f"Invalid env var key '{key}'")
+    return key
+
+# %% [markdown]
 # ## Sudo helpers
 #
 # pyinfra natively supports ``_sudo=True`` on ``run_shell_command`` and
@@ -168,7 +214,7 @@ def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 
         override_data={
             "ssh_user": server.ssh_user,
             "ssh_key": ssh_key,
-            "ssh_strict_host_key_checking": "no",
+            "ssh_strict_host_key_checking": "accept-new",
         },
     )
     config = Config(CONNECT_TIMEOUT=connect_timeout)
@@ -286,8 +332,53 @@ def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: 
 
     cmd = [
         "rsync", "-az", "--delete",
-        "-e", f"ssh -i {ssh_key} -o StrictHostKeyChecking=accept-new",
+        "-e", f"ssh -i {shlex.quote(ssh_key)} -o StrictHostKeyChecking=accept-new",
         local,
         f"{server.ssh_user}@{host_addr}:{remote_path}/",
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+# %% [markdown]
+# ## File locking
+#
+# Use ``flock`` on the remote server to prevent concurrent state
+# file corruption when multiple clients run simultaneously.
+
+# %%
+#|export
+def _lock_path(ctx: RemoteContext | None = None) -> str:
+    """Return the path to the remote lock file."""
+    root = ctx.app_root if ctx else DEFAULT_APP_ROOT
+    return f"{root}/.appgarden.lock"
+
+def read_garden_state_locked(host, ctx: RemoteContext | None = None) -> dict:
+    """Read garden state under flock."""
+    lock = _lock_path(ctx)
+    path = garden_state_path(ctx)
+    raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
+    return json.loads(raw)
+
+def write_garden_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
+    """Write garden state under flock (write tmp, then atomic mv under lock)."""
+    path = garden_state_path(ctx)
+    lock = _lock_path(ctx)
+    content = json.dumps(state, indent=2)
+    tmp = f"{path}.tmp"
+    write_remote_file(host, tmp, content)
+    run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
+
+def read_ports_state_locked(host, ctx: RemoteContext | None = None) -> dict:
+    """Read ports state under flock."""
+    lock = _lock_path(ctx)
+    path = ports_path(ctx)
+    raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
+    return json.loads(raw)
+
+def write_ports_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
+    """Write ports state under flock (write tmp, then atomic mv under lock)."""
+    path = ports_path(ctx)
+    lock = _lock_path(ctx)
+    content = json.dumps(state, indent=2)
+    tmp = f"{path}.tmp"
+    write_remote_file(host, tmp, content)
+    run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
