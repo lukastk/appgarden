@@ -68,12 +68,13 @@ def test_allocate_increments():
 
 # %%
 #|export
-def test_allocate_duplicate_app_raises():
-    """Allocating twice for the same app raises ValueError."""
+def test_allocate_duplicate_app_returns_existing():
+    """Allocating twice for the same app returns the existing port."""
     ports = empty_ports_state()
-    ports, _ = _allocate_port(ports, "myapp")
-    with pytest.raises(ValueError, match="already has port"):
-        _allocate_port(ports, "myapp")
+    ports, p1 = _allocate_port(ports, "myapp")
+    ports, p2 = _allocate_port(ports, "myapp")
+    assert p1 == p2
+    assert ports["next_port"] == PORT_RANGE_START + 1  # not incremented again
 
 # %% [markdown]
 # ## _release_port

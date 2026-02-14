@@ -10,8 +10,10 @@ from rich.console import Console
 from .config import ServerConfig
 from .remote import (
     APPGARDEN_ROOT,
+    RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
     read_garden_state, write_garden_state, upload_directory,
+    run_sudo_command,
 )
 from .routing import parse_url, remove_caddy_config
 from .ports import release_port
@@ -30,9 +32,9 @@ class AppInfo:
     status: str | None = None
 
 # %% pts/appgarden/06_apps.pct.py 6
-def list_apps(host) -> list[AppInfo]:
+def list_apps(host, ctx: RemoteContext | None = None) -> list[AppInfo]:
     """List all apps from garden.json."""
-    state = read_garden_state(host)
+    state = read_garden_state(host, ctx=ctx)
     apps = []
     for name, entry in state.get("apps", {}).items():
         apps.append(AppInfo(
@@ -45,16 +47,16 @@ def list_apps(host) -> list[AppInfo]:
     return apps
 
 # %% pts/appgarden/06_apps.pct.py 7
-def list_apps_with_status(host) -> list[AppInfo]:
+def list_apps_with_status(host, ctx: RemoteContext | None = None) -> list[AppInfo]:
     """List all apps with live systemd status."""
-    apps = list_apps(host)
+    apps = list_apps(host, ctx=ctx)
     for app in apps:
         if app.method == "static":
             app.status = "serving"
         else:
             unit = _systemd_unit_name(app.name)
             try:
-                result = run_remote_command(host, f"systemctl is-active {unit}")
+                result = run_sudo_command(host, f"systemctl is-active {unit}", ctx=ctx)
                 app.status = result.strip()
             except RuntimeError:
                 app.status = "inactive"
@@ -75,9 +77,9 @@ class AppStatus:
     updated_at: str | None = None
 
 # %% pts/appgarden/06_apps.pct.py 10
-def app_status(host, name: str) -> AppStatus:
+def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
     """Get detailed status for a single app."""
-    state = read_garden_state(host)
+    state = read_garden_state(host, ctx=ctx)
     if name not in state.get("apps", {}):
         raise ValueError(f"App '{name}' not found")
 
@@ -89,7 +91,7 @@ def app_status(host, name: str) -> AppStatus:
     else:
         unit = _systemd_unit_name(name)
         try:
-            result = run_remote_command(host, f"systemctl is-active {unit}")
+            result = run_sudo_command(host, f"systemctl is-active {unit}", ctx=ctx)
             status = result.strip()
         except RuntimeError:
             status = "inactive"
@@ -108,25 +110,25 @@ def app_status(host, name: str) -> AppStatus:
     )
 
 # %% pts/appgarden/06_apps.pct.py 12
-def stop_app(host, name: str) -> None:
+def stop_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Stop an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_remote_command(host, f"systemctl stop {unit}")
+    run_sudo_command(host, f"systemctl stop {unit}", ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 13
-def start_app(host, name: str) -> None:
+def start_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Start an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_remote_command(host, f"systemctl start {unit}")
+    run_sudo_command(host, f"systemctl start {unit}", ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 14
-def restart_app(host, name: str) -> None:
+def restart_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Restart an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_remote_command(host, f"systemctl restart {unit}")
+    run_sudo_command(host, f"systemctl restart {unit}", ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 16
-def app_logs(host, name: str, lines: int = 50, follow: bool = False) -> str:
+def app_logs(host, name: str, lines: int = 50, follow: bool = False, ctx: RemoteContext | None = None) -> str:
     """Fetch logs for an app via journalctl.
 
     When *follow* is True, this would block — use for non-interactive
@@ -135,12 +137,12 @@ def app_logs(host, name: str, lines: int = 50, follow: bool = False) -> str:
     """
     unit = _systemd_unit_name(name)
     cmd = f"journalctl -u {unit} --no-pager -n {lines}"
-    return run_remote_command(host, cmd, timeout=30)
+    return run_sudo_command(host, cmd, ctx=ctx, timeout=30)
 
 # %% pts/appgarden/06_apps.pct.py 18
-def remove_app(host, name: str, keep_data: bool = False) -> None:
+def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | None = None) -> None:
     """Remove an app and all its resources from the server."""
-    state = read_garden_state(host)
+    state = read_garden_state(host, ctx=ctx)
     if name not in state.get("apps", {}):
         raise ValueError(f"App '{name}' not found")
 
@@ -153,20 +155,20 @@ def remove_app(host, name: str, keep_data: bool = False) -> None:
     if method != "static":
         unit = _systemd_unit_name(name)
         try:
-            run_remote_command(host, f"systemctl stop {unit}")
+            run_sudo_command(host, f"systemctl stop {unit}", ctx=ctx)
         except RuntimeError:
             pass
         try:
-            run_remote_command(host, f"systemctl disable {unit}")
+            run_sudo_command(host, f"systemctl disable {unit}", ctx=ctx)
         except RuntimeError:
             pass
         # Remove unit file
-        run_remote_command(host, f"rm -f {SYSTEMD_UNIT_DIR}/{unit}")
-        run_remote_command(host, "systemctl daemon-reload")
+        run_sudo_command(host, f"rm -f {SYSTEMD_UNIT_DIR}/{unit}", ctx=ctx)
+        run_sudo_command(host, "systemctl daemon-reload", ctx=ctx)
 
     # 2. Remove Caddy config
     remove_caddy_config(host, app_name=name, domain=domain, path=path,
-                        garden_state=state)
+                        garden_state=state, ctx=ctx)
 
     # 3. Release port
     if entry.get("port") is not None:
@@ -177,21 +179,23 @@ def remove_app(host, name: str, keep_data: bool = False) -> None:
 
     # 4. Remove from garden.json
     del state["apps"][name]
-    write_garden_state(host, state)
+    write_garden_state(host, state, ctx=ctx)
 
     # 5. Remove app files
-    app_dir = _app_dir(name)
+    adir = _app_dir(name, ctx)
     if keep_data:
         # Remove everything except data/
         run_remote_command(host,
-            f"find {app_dir} -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {{}} +")
+            f"find {adir} -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {{}} +")
     else:
-        run_remote_command(host, f"rm -rf {app_dir}")
+        run_remote_command(host, f"rm -rf {adir}")
 
 # %% pts/appgarden/06_apps.pct.py 20
-def redeploy_app(server: ServerConfig, host, name: str) -> None:
+def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | None = None) -> None:
     """Redeploy an app: update source, rebuild, restart."""
-    state = read_garden_state(host)
+    if ctx is None:
+        ctx = make_remote_context(server)
+    state = read_garden_state(host, ctx=ctx)
     if name not in state.get("apps", {}):
         raise ValueError(f"App '{name}' not found")
 
@@ -199,7 +203,7 @@ def redeploy_app(server: ServerConfig, host, name: str) -> None:
     method = entry.get("method", "unknown")
     source = entry.get("source")
     source_type = entry.get("source_type")
-    source_path = _source_dir(name)
+    source_path = _source_dir(name, ctx)
 
     # 1. Update source
     if source_type == "git":
@@ -223,13 +227,13 @@ def redeploy_app(server: ServerConfig, host, name: str) -> None:
     if method != "static":
         unit = _systemd_unit_name(name)
         console.print("  [dim]Restarting service...[/dim]")
-        run_remote_command(host, f"systemctl restart {unit}")
+        run_sudo_command(host, f"systemctl restart {unit}", ctx=ctx)
     else:
         # Static: Caddy serves files directly, just reload
-        run_remote_command(host, "systemctl reload caddy")
+        run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
 
     # 4. Update timestamp
     from datetime import datetime, timezone
     entry["updated_at"] = datetime.now(timezone.utc).isoformat()
     state["apps"][name] = entry
-    write_garden_state(host, state)
+    write_garden_state(host, state, ctx=ctx)

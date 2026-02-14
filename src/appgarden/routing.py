@@ -8,9 +8,10 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from .remote import (
-    APPGARDEN_ROOT,
+    APPGARDEN_ROOT, RemoteContext,
     ssh_connect, read_remote_file, write_remote_file,
     run_remote_command, read_garden_state,
+    run_sudo_command, caddy_apps_dir, caddy_tunnels_dir,
 )
 from .config import ServerConfig
 
@@ -89,15 +90,15 @@ def generate_caddy_config(
     }])
 
 # %% pts/appgarden/03_routing.pct.py 10
-def _caddy_file_path(app_name: str) -> str:
+def _caddy_file_path(app_name: str, ctx: RemoteContext | None = None) -> str:
     """Return the remote path for an app's Caddy config."""
-    return f"{CADDY_APPS_DIR}/{app_name}.caddy"
+    return f"{caddy_apps_dir(ctx)}/{app_name}.caddy"
 
 # %% pts/appgarden/03_routing.pct.py 11
-def _domain_caddy_file_path(domain: str) -> str:
+def _domain_caddy_file_path(domain: str, ctx: RemoteContext | None = None) -> str:
     """Return the remote path for a domain's merged subdirectory Caddy config."""
     safe_domain = domain.replace(".", "_")
-    return f"{CADDY_APPS_DIR}/_subdir_{safe_domain}.caddy"
+    return f"{caddy_apps_dir(ctx)}/_subdir_{safe_domain}.caddy"
 
 # %% pts/appgarden/03_routing.pct.py 12
 def _collect_subdirectory_apps(garden_state: dict, domain: str) -> list[dict]:
@@ -126,6 +127,7 @@ def deploy_caddy_config(
     method: str = "command",
     source_path: str | None = None,
     garden_state: dict | None = None,
+    ctx: RemoteContext | None = None,
 ) -> None:
     """Write a Caddy config for an app and reload Caddy.
 
@@ -135,7 +137,7 @@ def deploy_caddy_config(
     if path is not None:
         # Subdirectory routing: merge all apps on this domain
         if garden_state is None:
-            garden_state = read_garden_state(host)
+            garden_state = read_garden_state(host, ctx=ctx)
         apps = _collect_subdirectory_apps(garden_state, domain)
 
         # Include the current app (may not be in garden_state yet)
@@ -149,16 +151,16 @@ def deploy_caddy_config(
             })
 
         config = generate_caddy_config(domain=domain, apps=apps)
-        remote_path = _domain_caddy_file_path(domain)
+        remote_path = _domain_caddy_file_path(domain, ctx)
     else:
         # Subdomain routing: one file per app
         config = generate_caddy_config(
             domain=domain, port=port, method=method, source_path=source_path,
         )
-        remote_path = _caddy_file_path(app_name)
+        remote_path = _caddy_file_path(app_name, ctx)
 
     write_remote_file(host, remote_path, config)
-    run_remote_command(host, "systemctl reload caddy")
+    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
 
 # %% pts/appgarden/03_routing.pct.py 15
 def remove_caddy_config(
@@ -167,6 +169,7 @@ def remove_caddy_config(
     domain: str,
     path: str | None = None,
     garden_state: dict | None = None,
+    ctx: RemoteContext | None = None,
 ) -> None:
     """Remove an app's Caddy config and reload Caddy.
 
@@ -177,11 +180,11 @@ def remove_caddy_config(
     if path is not None:
         # Subdirectory: regenerate merged config without this app
         if garden_state is None:
-            garden_state = read_garden_state(host)
+            garden_state = read_garden_state(host, ctx=ctx)
         apps = [a for a in _collect_subdirectory_apps(garden_state, domain)
                 if a["name"] != app_name]
 
-        remote_path = _domain_caddy_file_path(domain)
+        remote_path = _domain_caddy_file_path(domain, ctx)
         if apps:
             config = generate_caddy_config(domain=domain, apps=apps)
             write_remote_file(host, remote_path, config)
@@ -189,10 +192,10 @@ def remove_caddy_config(
             run_remote_command(host, f"rm -f {remote_path}")
     else:
         # Subdomain: just remove the file
-        remote_path = _caddy_file_path(app_name)
+        remote_path = _caddy_file_path(app_name, ctx)
         run_remote_command(host, f"rm -f {remote_path}")
 
-    run_remote_command(host, "systemctl reload caddy")
+    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
 
 # %% pts/appgarden/03_routing.pct.py 17
 def render_template(template_name: str, **kwargs) -> str:

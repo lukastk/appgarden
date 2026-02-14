@@ -130,7 +130,8 @@ def generate_dockerfile(
 #|export
 from appgarden.config import ServerConfig
 from appgarden.remote import (
-    APPGARDEN_ROOT, ssh_connect, run_remote_command, write_remote_file,
+    APPGARDEN_ROOT, RemoteContext, make_remote_context,
+    ssh_connect, run_remote_command, write_remote_file,
     read_garden_state,
 )
 from appgarden.deploy import (
@@ -159,15 +160,16 @@ def deploy_auto(
     env_file: str | None = None,
 ) -> None:
     """Auto-detect runtime, generate Dockerfile, build and deploy."""
+    ctx = make_remote_context(server)
     domain, path = parse_url(url)
     console.print(f"[bold]Deploying auto app[/bold] '{name}' → {url}")
 
     with ssh_connect(server) as host:
         # Upload source
         console.print("  [dim]Uploading source...[/dim]")
-        source_type = upload_source(server, host, name, source, branch)
-        source_path = _source_dir(name)
-        app_dir = _app_dir(name)
+        source_type = upload_source(server, host, name, source, branch, ctx=ctx)
+        source_path = _source_dir(name, ctx)
+        adir = _app_dir(name, ctx)
 
         # Detect runtime from local source (if local) or remote
         runtime = None
@@ -213,7 +215,7 @@ def deploy_auto(
         )
 
         # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file)
+        env_path = _write_env_file(host, name, env_vars, env_file, ctx=ctx)
 
         # Generate docker-compose.yml
         compose_content = render_template(
@@ -227,7 +229,7 @@ def deploy_auto(
             "    build: .",
             f"    image: {image_name}",
         )
-        write_remote_file(host, f"{app_dir}/docker-compose.yml", compose_content)
+        write_remote_file(host, f"{adir}/docker-compose.yml", compose_content)
 
         # Create systemd unit
         console.print("  [dim]Creating systemd service...[/dim]")
@@ -235,20 +237,20 @@ def deploy_auto(
             "systemd.service.j2",
             name=name,
             method="docker-compose",
-            working_dir=app_dir,
+            working_dir=adir,
             env_file=None,
             env_vars={},
             exec_start="/usr/bin/docker compose up",
             exec_stop="/usr/bin/docker compose down",
         )
-        unit_name = _deploy_systemd_unit(host, name, unit_content)
+        unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
         # Deploy Caddy config
         console.print("  [dim]Configuring Caddy...[/dim]")
-        garden_state = read_garden_state(host)
+        garden_state = read_garden_state(host, ctx=ctx)
         deploy_caddy_config(
             host, app_name=name, domain=domain, port=port, path=path,
-            garden_state=garden_state,
+            garden_state=garden_state, ctx=ctx,
         )
 
         # Register
@@ -257,7 +259,7 @@ def deploy_auto(
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra={"auto_detected_runtime": runtime.name},
+            extra={"auto_detected_runtime": runtime.name}, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

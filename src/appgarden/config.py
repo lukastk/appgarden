@@ -21,6 +21,7 @@ class ServerConfig:
     host: str | None = None
     hcloud_name: str | None = None
     hcloud_context: str | None = None
+    app_root: str | None = None  # default None → "/srv/appgarden"
 
 # %% pts/appgarden/00_config.pct.py 6
 @dataclass

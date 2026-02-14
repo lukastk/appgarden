@@ -29,7 +29,12 @@ from appgarden.remote import (
     read_garden_state, write_garden_state,
     read_ports_state, write_ports_state,
     GARDEN_STATE_PATH, PORTS_PATH,
+    DEFAULT_APP_ROOT, RemoteContext, make_remote_context,
+    run_sudo_command, write_system_file,
+    garden_state_path, ports_path, caddy_apps_dir, caddy_tunnels_dir,
+    app_dir, source_dir, tunnels_state_path,
 )
+from appgarden.config import ServerConfig
 
 # %% [markdown]
 # ## read_remote_file / write_remote_file
@@ -171,3 +176,190 @@ def test_ports_state_roundtrip():
 
     loaded = read_ports_state(host)
     assert loaded == ports_data
+
+# %% [markdown]
+# ## RemoteContext
+
+# %%
+#|export
+def test_remote_context_defaults():
+    """RemoteContext has sensible defaults."""
+    ctx = RemoteContext()
+    assert ctx.app_root == DEFAULT_APP_ROOT
+    assert ctx.needs_sudo is False
+
+# %%
+#|export
+def test_make_remote_context_root():
+    """make_remote_context for root user: no sudo needed."""
+    server = ServerConfig(ssh_user="root", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    ctx = make_remote_context(server)
+    assert ctx.app_root == DEFAULT_APP_ROOT
+    assert ctx.needs_sudo is False
+
+# %%
+#|export
+def test_make_remote_context_nonroot():
+    """make_remote_context for non-root user: needs sudo."""
+    server = ServerConfig(ssh_user="deploy", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    ctx = make_remote_context(server)
+    assert ctx.needs_sudo is True
+
+# %%
+#|export
+def test_make_remote_context_custom_app_root():
+    """make_remote_context respects custom app_root."""
+    server = ServerConfig(
+        ssh_user="deploy", ssh_key="~/.ssh/id_rsa", domain="example.com",
+        host="1.2.3.4", app_root="/opt/myapps",
+    )
+    ctx = make_remote_context(server)
+    assert ctx.app_root == "/opt/myapps"
+    assert ctx.needs_sudo is True
+
+# %% [markdown]
+# ## Path functions
+
+# %%
+#|export
+def test_path_functions_default():
+    """Path functions return default paths when ctx is None."""
+    assert garden_state_path() == f"{DEFAULT_APP_ROOT}/garden.json"
+    assert ports_path() == f"{DEFAULT_APP_ROOT}/ports.json"
+    assert caddy_apps_dir() == f"{DEFAULT_APP_ROOT}/caddy/apps"
+    assert caddy_tunnels_dir() == f"{DEFAULT_APP_ROOT}/caddy/tunnels"
+    assert app_dir(None, "myapp") == f"{DEFAULT_APP_ROOT}/apps/myapp"
+    assert source_dir(None, "myapp") == f"{DEFAULT_APP_ROOT}/apps/myapp/source"
+    assert tunnels_state_path() == f"{DEFAULT_APP_ROOT}/tunnels/active.json"
+
+# %%
+#|export
+def test_path_functions_custom_root():
+    """Path functions use custom app_root from ctx."""
+    ctx = RemoteContext(app_root="/opt/garden")
+    assert garden_state_path(ctx) == "/opt/garden/garden.json"
+    assert ports_path(ctx) == "/opt/garden/ports.json"
+    assert caddy_apps_dir(ctx) == "/opt/garden/caddy/apps"
+    assert caddy_tunnels_dir(ctx) == "/opt/garden/caddy/tunnels"
+    assert app_dir(ctx, "foo") == "/opt/garden/apps/foo"
+    assert source_dir(ctx, "foo") == "/opt/garden/apps/foo/source"
+    assert tunnels_state_path(ctx) == "/opt/garden/tunnels/active.json"
+
+# %% [markdown]
+# ## run_sudo_command
+
+# %%
+#|export
+def test_run_sudo_command_no_sudo():
+    """run_sudo_command without sudo does not pass _sudo."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = "ok"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    result = run_sudo_command(host, "apt-get update")
+    kwargs = host.run_shell_command.call_args.kwargs
+    assert kwargs["command"] == "apt-get update"
+    assert "_sudo" not in kwargs
+    assert result == "ok"
+
+# %%
+#|export
+def test_run_sudo_command_with_sudo():
+    """run_sudo_command with needs_sudo passes _sudo=True to pyinfra."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = "ok"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    ctx = RemoteContext(needs_sudo=True)
+    result = run_sudo_command(host, "apt-get update", ctx=ctx)
+    kwargs = host.run_shell_command.call_args.kwargs
+    assert kwargs["command"] == "apt-get update"
+    assert kwargs["_sudo"] is True
+
+# %%
+#|export
+def test_run_sudo_command_with_chain():
+    """run_sudo_command passes _sudo for && chains too."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = "ok"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    ctx = RemoteContext(needs_sudo=True)
+    run_sudo_command(host, "apt-get update && apt-get upgrade -y", ctx=ctx)
+    kwargs = host.run_shell_command.call_args.kwargs
+    assert kwargs["command"] == "apt-get update && apt-get upgrade -y"
+    assert kwargs["_sudo"] is True
+
+# %%
+#|export
+def test_run_sudo_command_no_ctx():
+    """run_sudo_command with ctx=None does not pass _sudo."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = "ok"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    run_sudo_command(host, "systemctl reload caddy", ctx=None)
+    kwargs = host.run_shell_command.call_args.kwargs
+    assert kwargs["command"] == "systemctl reload caddy"
+    assert "_sudo" not in kwargs
+
+# %% [markdown]
+# ## write_system_file
+
+# %%
+#|export
+def test_write_system_file_no_sudo():
+    """write_system_file without sudo writes directly via put_file."""
+    host = MagicMock()
+    host.put_file.return_value = True
+
+    write_system_file(host, "/etc/caddy/Caddyfile", "content")
+    host.put_file.assert_called_once()
+    kwargs = host.put_file.call_args.kwargs
+    assert kwargs["remote_filename"] == "/etc/caddy/Caddyfile"
+    assert "_sudo" not in kwargs
+
+# %%
+#|export
+def test_write_system_file_with_sudo():
+    """write_system_file with sudo passes _sudo=True to put_file."""
+    host = MagicMock()
+    host.put_file.return_value = True
+
+    ctx = RemoteContext(needs_sudo=True)
+    write_system_file(host, "/etc/caddy/Caddyfile", "content", ctx=ctx)
+
+    host.put_file.assert_called_once()
+    kwargs = host.put_file.call_args.kwargs
+    assert kwargs["remote_filename"] == "/etc/caddy/Caddyfile"
+    assert kwargs["_sudo"] is True
+    assert kwargs["filename_or_io"].getvalue() == b"content"
+
+# %% [markdown]
+# ## Garden/ports state with custom ctx
+
+# %%
+#|export
+def test_garden_state_with_ctx():
+    """read/write garden state uses custom path from ctx."""
+    ctx = RemoteContext(app_root="/opt/garden")
+    host = MagicMock()
+
+    # Write
+    host.put_file.return_value = True
+    write_garden_state(host, {"apps": {}}, ctx=ctx)
+    put_path = host.put_file.call_args.kwargs["remote_filename"]
+    assert put_path == "/opt/garden/garden.json"
+
+    # Read
+    host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
+        filename_or_io.write(b'{"apps": {}}') or True
+    )
+    state = read_garden_state(host, ctx=ctx)
+    get_path = host.get_file.call_args.kwargs["remote_filename"]
+    assert get_path == "/opt/garden/garden.json"
+    assert state == {"apps": {}}

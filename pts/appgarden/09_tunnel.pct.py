@@ -35,6 +35,8 @@ from appgarden.config import ServerConfig, resolve_host
 from appgarden.remote import (
     ssh_connect, run_remote_command, read_remote_file, write_remote_file,
     APPGARDEN_ROOT,
+    RemoteContext, make_remote_context,
+    run_sudo_command, caddy_tunnels_dir, tunnels_state_path,
 )
 from appgarden.ports import allocate_port, release_port
 from appgarden.routing import generate_caddy_config, CADDY_TUNNELS_DIR
@@ -66,87 +68,92 @@ class TunnelInfo:
 
 # %%
 #|export
-def _read_tunnels_state(host) -> dict:
+def _read_tunnels_state(host, ctx: RemoteContext | None = None) -> dict:
     """Read the active tunnels state from the server."""
     try:
-        content = read_remote_file(host, TUNNELS_STATE_FILE)
+        path = tunnels_state_path(ctx) if ctx else TUNNELS_STATE_FILE
+        content = read_remote_file(host, path)
         return json.loads(content)
     except (RuntimeError, json.JSONDecodeError):
         return {"tunnels": {}}
 
 # %%
 #|export
-def _write_tunnels_state(host, state: dict) -> None:
+def _write_tunnels_state(host, state: dict, ctx: RemoteContext | None = None) -> None:
     """Write the active tunnels state to the server."""
-    write_remote_file(host, TUNNELS_STATE_FILE, json.dumps(state, indent=2))
+    path = tunnels_state_path(ctx) if ctx else TUNNELS_STATE_FILE
+    write_remote_file(host, path, json.dumps(state, indent=2))
 
 # %% [markdown]
 # ## open_tunnel
 
 # %%
 #|export
-def _tunnel_caddy_path(tunnel_id: str) -> str:
+def _tunnel_caddy_path(tunnel_id: str, ctx: RemoteContext | None = None) -> str:
     """Path for a tunnel's Caddy config file."""
-    return f"{CADDY_TUNNELS_DIR}/{tunnel_id}.caddy"
+    tunnels_dir = caddy_tunnels_dir(ctx) if ctx else CADDY_TUNNELS_DIR
+    return f"{tunnels_dir}/{tunnel_id}.caddy"
 
 # %%
 #|export
-def _deploy_tunnel_caddy(host, tunnel_id: str, domain: str, remote_port: int) -> None:
+def _deploy_tunnel_caddy(host, tunnel_id: str, domain: str, remote_port: int, ctx: RemoteContext | None = None) -> None:
     """Deploy a temporary Caddy config for the tunnel."""
     config = generate_caddy_config(
         domain=domain,
         port=remote_port,
     )
-    caddy_path = _tunnel_caddy_path(tunnel_id)
+    caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     write_remote_file(host, caddy_path, config)
-    run_remote_command(host, "systemctl reload caddy")
+    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
 
 # %%
 #|export
-def _remove_tunnel_caddy(host, tunnel_id: str) -> None:
+def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None) -> None:
     """Remove a tunnel's Caddy config and reload."""
-    caddy_path = _tunnel_caddy_path(tunnel_id)
+    caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     try:
         run_remote_command(host, f"rm -f {caddy_path}")
-        run_remote_command(host, "systemctl reload caddy")
+        run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
     except RuntimeError:
         pass
 
 # %%
 #|export
-def _register_tunnel(host, tunnel_id: str, url: str, local_port: int, remote_port: int) -> None:
+def _register_tunnel(host, tunnel_id: str, url: str, local_port: int, remote_port: int, ctx: RemoteContext | None = None) -> None:
     """Record the tunnel in active.json."""
-    state = _read_tunnels_state(host)
+    state = _read_tunnels_state(host, ctx=ctx)
     state["tunnels"][tunnel_id] = {
         "url": url,
         "local_port": local_port,
         "remote_port": remote_port,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    _write_tunnels_state(host, state)
+    _write_tunnels_state(host, state, ctx=ctx)
 
 # %%
 #|export
-def _unregister_tunnel(host, tunnel_id: str) -> None:
+def _unregister_tunnel(host, tunnel_id: str, ctx: RemoteContext | None = None) -> None:
     """Remove the tunnel from active.json."""
-    state = _read_tunnels_state(host)
+    state = _read_tunnels_state(host, ctx=ctx)
     state["tunnels"].pop(tunnel_id, None)
-    _write_tunnels_state(host, state)
+    _write_tunnels_state(host, state, ctx=ctx)
 
 # %% [markdown]
 # ## Cleanup and signal handling
 
 # %%
 #|export
-def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str) -> None:
+def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str, ctx: RemoteContext | None = None) -> None:
     """Full cleanup: remove Caddy config, release port, unregister."""
+    if ctx is None:
+        ctx = make_remote_context(server)
     with ssh_connect(server) as host:
-        _remove_tunnel_caddy(host, tunnel_id)
+        _remove_tunnel_caddy(host, tunnel_id, ctx=ctx)
         try:
             release_port(host, app_name)
         except ValueError:
             pass
-        _unregister_tunnel(host, tunnel_id)
+        _unregister_tunnel(host, tunnel_id, ctx=ctx)
 
 # %% [markdown]
 # ## open_tunnel (main entry point)
@@ -158,6 +165,7 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
 
     Blocks until Ctrl+C, then cleans up.
     """
+    ctx = make_remote_context(server)
     tunnel_id = f"tunnel-{uuid.uuid4().hex[:8]}"
     app_name = tunnel_id
     host_ip = resolve_host(server)
@@ -165,8 +173,8 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
     # 1. Allocate port and set up Caddy
     with ssh_connect(server) as host:
         remote_port = allocate_port(host, app_name)
-        _deploy_tunnel_caddy(host, tunnel_id, url, remote_port)
-        _register_tunnel(host, tunnel_id, url, local_port, remote_port)
+        _deploy_tunnel_caddy(host, tunnel_id, url, remote_port, ctx=ctx)
+        _register_tunnel(host, tunnel_id, url, local_port, remote_port, ctx=ctx)
 
     console.print(f"[green]Tunnel open:[/green] https://{url} -> localhost:{local_port}")
     console.print(f"[dim]Remote port: {remote_port} | Tunnel ID: {tunnel_id}[/dim]")
@@ -193,7 +201,7 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
         if proc and proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
-        _cleanup_tunnel(server, tunnel_id, app_name)
+        _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
         console.print("[green]Tunnel closed.[/green]")
 
 # %% [markdown]
@@ -203,17 +211,18 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
 #|export
 def close_tunnel(server: ServerConfig, tunnel_id: str) -> None:
     """Close a specific tunnel by ID (remote cleanup only)."""
+    ctx = make_remote_context(server)
     app_name = tunnel_id
-    _cleanup_tunnel(server, tunnel_id, app_name)
+    _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
 
 # %% [markdown]
 # ## list_tunnels
 
 # %%
 #|export
-def list_tunnels(host) -> list[TunnelInfo]:
+def list_tunnels(host, ctx: RemoteContext | None = None) -> list[TunnelInfo]:
     """List all active tunnels from the server."""
-    state = _read_tunnels_state(host)
+    state = _read_tunnels_state(host, ctx=ctx)
     tunnels = []
     for tid, data in state.get("tunnels", {}).items():
         tunnels.append(TunnelInfo(
@@ -235,9 +244,10 @@ def cleanup_stale_tunnels(server: ServerConfig) -> list[str]:
 
     Returns list of cleaned-up tunnel IDs.
     """
+    ctx = make_remote_context(server)
     cleaned = []
     with ssh_connect(server) as host:
-        state = _read_tunnels_state(host)
+        state = _read_tunnels_state(host, ctx=ctx)
         for tid, data in list(state.get("tunnels", {}).items()):
             remote_port = data.get("remote_port")
             if remote_port is None:

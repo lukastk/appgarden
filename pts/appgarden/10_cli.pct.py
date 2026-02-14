@@ -135,6 +135,7 @@ def server_add(
     ssh_user: str = typer.Option("root", help="SSH user"),
     ssh_key: str = typer.Option("~/.ssh/id_rsa", help="Path to SSH private key"),
     domain: str = typer.Option(..., help="Base domain for applications"),
+    app_root: Optional[str] = typer.Option(None, "--app-root", help="App root directory on server (default: /srv/appgarden)"),
 ):
     """Add a server to the configuration."""
     if not host and not (hcloud_name and hcloud_context):
@@ -149,6 +150,7 @@ def server_add(
         host=host,
         hcloud_name=hcloud_name,
         hcloud_context=hcloud_context,
+        app_root=app_root,
     )
     if cfg.default_server is None:
         cfg.default_server = name

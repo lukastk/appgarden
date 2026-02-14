@@ -18,12 +18,12 @@ def _allocate_port(ports: dict, app_name: str) -> tuple[dict, int]:
     """Allocate the next available port for *app_name*.
 
     Returns ``(updated_ports, port_number)``.
-    Raises ``ValueError`` if *app_name* already has a port.
+    If *app_name* already has a port, returns the existing allocation.
     """
-    # Check if app already has a port
+    # Return existing port if app already has one
     for port_str, name in ports["allocated"].items():
         if name == app_name:
-            raise ValueError(f"App '{app_name}' already has port {port_str} allocated")
+            return ports, int(port_str)
 
     port = ports["next_port"]
     ports["allocated"][str(port)] = app_name
