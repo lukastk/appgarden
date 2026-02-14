@@ -44,12 +44,58 @@ from appgarden.tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_st
 
 # %%
 #|export
+import socket
+
+# %%
+#|export
+_verbose = False
+_quiet = False
+
+def _version_callback(value: bool):
+    if value:
+        from appgarden import __version__
+        typer.echo(f"appgarden {__version__}")
+        raise typer.Exit()
+
+def _main_callback(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-essential output"),
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
+):
+    global _verbose, _quiet
+    _verbose = verbose
+    _quiet = quiet
+
 app = typer.Typer(
     name="appgarden",
     help="Deploy web applications to remote servers.",
     no_args_is_help=True,
+    callback=_main_callback,
 )
 console = Console()
+
+# %%
+#|export
+def _check_dns(url: str, expected_ip: str | None = None) -> None:
+    """Warn if a URL's domain doesn't resolve or resolves to wrong IP."""
+    if _quiet:
+        return
+    # Extract domain from URL
+    domain = url.split("/")[0]
+    try:
+        resolved = socket.gethostbyname(domain)
+        if expected_ip and resolved != expected_ip:
+            console.print(
+                f"[yellow]Warning:[/yellow] {domain} resolves to {resolved}, "
+                f"expected {expected_ip}"
+            )
+        elif _verbose:
+            console.print(f"[dim]DNS: {domain} -> {resolved}[/dim]")
+    except socket.gaierror:
+        console.print(
+            f"[yellow]Warning:[/yellow] {domain} does not resolve. "
+            f"Ensure DNS is configured before deploying."
+        )
 
 # %% [markdown]
 # ## Version command
@@ -305,6 +351,7 @@ def _deploy_env(cfg, env_cfg, server_override: str | None = None) -> None:
         console.print(f"[red]Error:[/red] No method defined for environment '{env_cfg.name}'")
         raise typer.Exit(code=1)
 
+    _check_dns(env_cfg.url, expected_ip=srv.host)
     console.print(f"Deploying [bold]{env_cfg.app_name}[/bold] ({env_cfg.name}) to {env_cfg.url}...")
     _dispatch_deploy(
         srv, env_cfg.app_name, env_cfg.method, env_cfg.url,
@@ -378,6 +425,7 @@ def deploy(
     if not method:
         method = "static"
 
+    _check_dns(url, expected_ip=srv.host)
     env_vars = _parse_env_list(env)
     _dispatch_deploy(
         srv, name, method, url,

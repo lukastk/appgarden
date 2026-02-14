@@ -26,14 +26,58 @@ from .environments import load_project_config, resolve_environment, resolve_all_
 from .tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_stale_tunnels
 
 # %% pts/appgarden/10_cli.pct.py 4
+import socket
+
+# %% pts/appgarden/10_cli.pct.py 5
+_verbose = False
+_quiet = False
+
+def _version_callback(value: bool):
+    if value:
+        from . import __version__
+        typer.echo(f"appgarden {__version__}")
+        raise typer.Exit()
+
+def _main_callback(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-essential output"),
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
+):
+    global _verbose, _quiet
+    _verbose = verbose
+    _quiet = quiet
+
 app = typer.Typer(
     name="appgarden",
     help="Deploy web applications to remote servers.",
     no_args_is_help=True,
+    callback=_main_callback,
 )
 console = Console()
 
 # %% pts/appgarden/10_cli.pct.py 6
+def _check_dns(url: str, expected_ip: str | None = None) -> None:
+    """Warn if a URL's domain doesn't resolve or resolves to wrong IP."""
+    if _quiet:
+        return
+    # Extract domain from URL
+    domain = url.split("/")[0]
+    try:
+        resolved = socket.gethostbyname(domain)
+        if expected_ip and resolved != expected_ip:
+            console.print(
+                f"[yellow]Warning:[/yellow] {domain} resolves to {resolved}, "
+                f"expected {expected_ip}"
+            )
+        elif _verbose:
+            console.print(f"[dim]DNS: {domain} -> {resolved}[/dim]")
+    except socket.gaierror:
+        console.print(
+            f"[yellow]Warning:[/yellow] {domain} does not resolve. "
+            f"Ensure DNS is configured before deploying."
+        )
+
+# %% pts/appgarden/10_cli.pct.py 8
 from . import __version__
 
 @app.command()
@@ -41,7 +85,7 @@ def version():
     """Show the appgarden version."""
     typer.echo(f"appgarden {__version__}")
 
-# %% pts/appgarden/10_cli.pct.py 8
+# %% pts/appgarden/10_cli.pct.py 10
 server_app = typer.Typer(
     name="server",
     help="Manage servers.",
@@ -49,7 +93,7 @@ server_app = typer.Typer(
 )
 app.add_typer(server_app, name="server")
 
-# %% pts/appgarden/10_cli.pct.py 10
+# %% pts/appgarden/10_cli.pct.py 12
 @server_app.command("add")
 def server_add(
     name: str = typer.Argument(help="Name for this server"),
@@ -79,7 +123,7 @@ def server_add(
     save_config(cfg)
     console.print(f"Server [bold]{name}[/bold] added.")
 
-# %% pts/appgarden/10_cli.pct.py 12
+# %% pts/appgarden/10_cli.pct.py 14
 @server_app.command("list")
 def server_list():
     """List configured servers."""
@@ -101,7 +145,7 @@ def server_list():
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 14
+# %% pts/appgarden/10_cli.pct.py 16
 @server_app.command("remove")
 def server_remove(
     name: str = typer.Argument(help="Name of the server to remove"),
@@ -118,7 +162,7 @@ def server_remove(
     save_config(cfg)
     console.print(f"Server [bold]{name}[/bold] removed.")
 
-# %% pts/appgarden/10_cli.pct.py 16
+# %% pts/appgarden/10_cli.pct.py 18
 @server_app.command("default")
 def server_default(
     name: str = typer.Argument(help="Name of the server to set as default"),
@@ -133,7 +177,7 @@ def server_default(
     save_config(cfg)
     console.print(f"Default server set to [bold]{name}[/bold].")
 
-# %% pts/appgarden/10_cli.pct.py 18
+# %% pts/appgarden/10_cli.pct.py 20
 @server_app.command("init")
 def server_init_cmd(
     name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
@@ -147,7 +191,7 @@ def server_init_cmd(
         raise typer.Exit(code=1)
     init_server(srv)
 
-# %% pts/appgarden/10_cli.pct.py 20
+# %% pts/appgarden/10_cli.pct.py 22
 @server_app.command("ping")
 def server_ping_cmd(
     name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
@@ -166,7 +210,7 @@ def server_ping_cmd(
         console.print(f"[red]Server '{sname}' is not reachable.[/red]")
         raise typer.Exit(code=1)
 
-# %% pts/appgarden/10_cli.pct.py 22
+# %% pts/appgarden/10_cli.pct.py 24
 def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
     """Parse a list of KEY=VALUE strings into a dict."""
     if not env:
@@ -179,7 +223,7 @@ def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
         result[k] = v
     return result
 
-# %% pts/appgarden/10_cli.pct.py 23
+# %% pts/appgarden/10_cli.pct.py 25
 def _dispatch_deploy(
     srv: ServerConfig, name: str, method: str, url: str,
     source: str | None = None, port: int | None = None,
@@ -231,7 +275,7 @@ def _dispatch_deploy(
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
         raise typer.Exit(code=1)
 
-# %% pts/appgarden/10_cli.pct.py 24
+# %% pts/appgarden/10_cli.pct.py 26
 def _deploy_env(cfg, env_cfg, server_override: str | None = None) -> None:
     """Deploy a single resolved environment config."""
     server_name = server_override or env_cfg.server
@@ -249,6 +293,7 @@ def _deploy_env(cfg, env_cfg, server_override: str | None = None) -> None:
         console.print(f"[red]Error:[/red] No method defined for environment '{env_cfg.name}'")
         raise typer.Exit(code=1)
 
+    _check_dns(env_cfg.url, expected_ip=srv.host)
     console.print(f"Deploying [bold]{env_cfg.app_name}[/bold] ({env_cfg.name}) to {env_cfg.url}...")
     _dispatch_deploy(
         srv, env_cfg.app_name, env_cfg.method, env_cfg.url,
@@ -260,7 +305,7 @@ def _deploy_env(cfg, env_cfg, server_override: str | None = None) -> None:
         env_file=env_cfg.env_file,
     )
 
-# %% pts/appgarden/10_cli.pct.py 25
+# %% pts/appgarden/10_cli.pct.py 27
 @app.command()
 def deploy(
     name: str = typer.Argument(help="App name or environment name"),
@@ -321,6 +366,7 @@ def deploy(
     if not method:
         method = "static"
 
+    _check_dns(url, expected_ip=srv.host)
     env_vars = _parse_env_list(env)
     _dispatch_deploy(
         srv, name, method, url,
@@ -329,7 +375,7 @@ def deploy(
         env_vars=env_vars, env_file=env_file,
     )
 
-# %% pts/appgarden/10_cli.pct.py 27
+# %% pts/appgarden/10_cli.pct.py 29
 apps_app = typer.Typer(
     name="apps",
     help="Manage deployed applications.",
@@ -337,7 +383,7 @@ apps_app = typer.Typer(
 )
 app.add_typer(apps_app, name="apps")
 
-# %% pts/appgarden/10_cli.pct.py 29
+# %% pts/appgarden/10_cli.pct.py 31
 @apps_app.command("list")
 def apps_list(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
@@ -368,7 +414,7 @@ def apps_list(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 31
+# %% pts/appgarden/10_cli.pct.py 33
 @apps_app.command("status")
 def apps_status(
     name: str = typer.Argument(help="App name"),
@@ -409,7 +455,7 @@ def apps_status(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 33
+# %% pts/appgarden/10_cli.pct.py 35
 @apps_app.command("stop")
 def apps_stop(
     name: str = typer.Argument(help="App name"),
@@ -427,7 +473,7 @@ def apps_stop(
         stop_app(host, name)
     console.print(f"App [bold]{name}[/bold] stopped.")
 
-# %% pts/appgarden/10_cli.pct.py 34
+# %% pts/appgarden/10_cli.pct.py 36
 @apps_app.command("start")
 def apps_start(
     name: str = typer.Argument(help="App name"),
@@ -445,7 +491,7 @@ def apps_start(
         start_app(host, name)
     console.print(f"App [bold]{name}[/bold] started.")
 
-# %% pts/appgarden/10_cli.pct.py 35
+# %% pts/appgarden/10_cli.pct.py 37
 @apps_app.command("restart")
 def apps_restart(
     name: str = typer.Argument(help="App name"),
@@ -463,7 +509,7 @@ def apps_restart(
         restart_app(host, name)
     console.print(f"App [bold]{name}[/bold] restarted.")
 
-# %% pts/appgarden/10_cli.pct.py 37
+# %% pts/appgarden/10_cli.pct.py 39
 @apps_app.command("logs")
 def apps_logs(
     name: str = typer.Argument(help="App name"),
@@ -482,7 +528,7 @@ def apps_logs(
         output = app_logs(host, name, lines=lines)
     console.print(output)
 
-# %% pts/appgarden/10_cli.pct.py 39
+# %% pts/appgarden/10_cli.pct.py 41
 @apps_app.command("remove")
 def apps_remove(
     name: str = typer.Argument(help="App name"),
@@ -512,7 +558,7 @@ def apps_remove(
 
     console.print(f"App [bold]{name}[/bold] removed.")
 
-# %% pts/appgarden/10_cli.pct.py 41
+# %% pts/appgarden/10_cli.pct.py 43
 @apps_app.command("redeploy")
 def apps_redeploy(
     name: str = typer.Argument(help="App name"),
@@ -536,7 +582,7 @@ def apps_redeploy(
 
     console.print(f"App [bold]{name}[/bold] redeployed.")
 
-# %% pts/appgarden/10_cli.pct.py 43
+# %% pts/appgarden/10_cli.pct.py 45
 tunnel_app = typer.Typer(
     name="tunnel",
     help="Manage localhost tunnels.",
@@ -544,7 +590,7 @@ tunnel_app = typer.Typer(
 )
 app.add_typer(tunnel_app, name="tunnel")
 
-# %% pts/appgarden/10_cli.pct.py 45
+# %% pts/appgarden/10_cli.pct.py 47
 @tunnel_app.command("open")
 def tunnel_open(
     local_port: int = typer.Argument(help="Local port to expose"),
@@ -561,7 +607,7 @@ def tunnel_open(
 
     open_tunnel(srv, local_port, url)
 
-# %% pts/appgarden/10_cli.pct.py 47
+# %% pts/appgarden/10_cli.pct.py 49
 @tunnel_app.command("list")
 def tunnel_list(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
@@ -593,7 +639,7 @@ def tunnel_list(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 49
+# %% pts/appgarden/10_cli.pct.py 51
 @tunnel_app.command("close")
 def tunnel_close(
     tunnel_id: str = typer.Argument(help="Tunnel ID to close"),
@@ -610,7 +656,7 @@ def tunnel_close(
     close_tunnel(srv, tunnel_id)
     console.print(f"Tunnel [bold]{tunnel_id}[/bold] closed.")
 
-# %% pts/appgarden/10_cli.pct.py 51
+# %% pts/appgarden/10_cli.pct.py 53
 @tunnel_app.command("cleanup")
 def tunnel_cleanup(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
@@ -630,7 +676,7 @@ def tunnel_cleanup(
     else:
         console.print("No stale tunnels found.")
 
-# %% pts/appgarden/10_cli.pct.py 53
+# %% pts/appgarden/10_cli.pct.py 55
 config_app = typer.Typer(
     name="config",
     help="View configuration.",
@@ -638,7 +684,7 @@ config_app = typer.Typer(
 )
 app.add_typer(config_app, name="config")
 
-# %% pts/appgarden/10_cli.pct.py 55
+# %% pts/appgarden/10_cli.pct.py 57
 @config_app.command("show")
 def config_show():
     """Print the current configuration file."""
@@ -648,7 +694,7 @@ def config_show():
         raise typer.Exit()
     console.print(p.read_text())
 
-# %% pts/appgarden/10_cli.pct.py 57
+# %% pts/appgarden/10_cli.pct.py 59
 def app_main() -> None:
     """Entry point for the appgarden CLI."""
     app()
