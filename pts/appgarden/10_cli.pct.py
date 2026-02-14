@@ -374,7 +374,15 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
 
     url = params.get("url")
     if not url:
-        console.print("[red]Error:[/red] --url is required")
+        base_domain = params.get("domain") or srv.domain
+        subdomain = params.get("subdomain")
+        path_prefix = params.get("path")
+        if subdomain:
+            url = f"{subdomain}.{base_domain}"
+        elif path_prefix:
+            url = f"{base_domain}/{path_prefix}"
+    if not url:
+        console.print("[red]Error:[/red] --url, --subdomain, or --path is required")
         raise typer.Exit(code=1)
 
     method = params.get("method", "static")
@@ -398,7 +406,10 @@ def deploy(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
     method: Optional[str] = typer.Option(None, "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
     source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
-    url: Optional[str] = typer.Option(None, "--url", help="URL for the app"),
+    url: Optional[str] = typer.Option(None, "--url", help="Full URL for the app (e.g. myapp.example.com)"),
+    subdomain: Optional[str] = typer.Option(None, "--subdomain", help="Subdomain (combined with --domain or server domain)"),
+    path: Optional[str] = typer.Option(None, "--path", help="Path prefix (combined with --domain or server domain)"),
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Base domain (overrides server domain for --subdomain/--path)"),
     port: Optional[int] = typer.Option(None, "--port", "-p", help="Host port (auto-allocated if omitted)"),
     container_port: Optional[int] = typer.Option(None, "--container-port", help="Container port (for dockerfile/auto methods)"),
     cmd: Optional[str] = typer.Option(None, "--cmd", help="Start command (for command/auto methods)"),
@@ -419,7 +430,8 @@ def deploy(
     # Collect CLI flags (only non-None values participate in cascade)
     cli_flags = {
         "server": server, "method": method, "source": source,
-        "url": url, "port": port, "container_port": container_port,
+        "url": url, "subdomain": subdomain, "path": path, "domain": domain,
+        "port": port, "container_port": container_port,
         "cmd": cmd, "setup_cmd": setup_cmd, "branch": branch,
         "env_file": env_file,
     }
