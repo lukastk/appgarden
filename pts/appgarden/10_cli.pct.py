@@ -23,8 +23,9 @@ from rich.table import Table
 
 from appgarden.config import (
     AppGardenConfig, ServerConfig,
-    load_config, save_config, config_path,
+    load_config, save_config, config_path, get_server,
 )
+from appgarden.server import init_server, ping_server
 
 # %% [markdown]
 # # CLI Application
@@ -163,6 +164,47 @@ def server_default(
     cfg.default_server = name
     save_config(cfg)
     console.print(f"Default server set to [bold]{name}[/bold].")
+
+# %% [markdown]
+# ### server init
+
+# %%
+#|export
+@server_app.command("init")
+def server_init_cmd(
+    name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
+):
+    """Initialise a server for AppGarden (installs Docker, Caddy, etc.)."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, name)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    init_server(srv)
+
+# %% [markdown]
+# ### server ping
+
+# %%
+#|export
+@server_app.command("ping")
+def server_ping_cmd(
+    name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
+):
+    """Test SSH connectivity to a server."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, name)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if ping_server(srv):
+        console.print(f"[green]Server '{sname}' is reachable.[/green]")
+    else:
+        console.print(f"[red]Server '{sname}' is not reachable.[/red]")
+        raise typer.Exit(code=1)
 
 # %% [markdown]
 # ## Config subcommand group

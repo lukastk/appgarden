@@ -1,0 +1,122 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %%
+#|default_exp test_server
+
+# %%
+#|hide
+from nblite import nbl_export; nbl_export();
+
+# %% [markdown]
+# # Server Tests
+#
+# Unit tests for server init and ping (mocked SSH).
+
+# %%
+#|export
+from unittest.mock import patch, MagicMock, call
+
+from appgarden.config import ServerConfig
+from appgarden.server import ping_server, init_server, CADDYFILE_CONTENT, SSH_HARDENING_CONTENT
+
+# %% [markdown]
+# ## ping_server
+
+# %%
+#|export
+def _make_server():
+    return ServerConfig(
+        ssh_user="root", ssh_key="~/.ssh/id_rsa",
+        domain="apps.example.com", host="1.2.3.4",
+    )
+
+# %%
+#|export
+def test_ping_server_success():
+    """ping_server returns True when SSH succeeds."""
+    host_mock = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = "ok"
+    host_mock.run_shell_command.return_value = (True, output_mock)
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        assert ping_server(_make_server()) is True
+
+# %%
+#|export
+def test_ping_server_failure():
+    """ping_server returns False when SSH connection fails."""
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.side_effect = Exception("Connection refused")
+        assert ping_server(_make_server()) is False
+
+# %% [markdown]
+# ## init_server
+
+# %%
+#|export
+def test_init_server_runs_expected_commands():
+    """init_server executes the expected sequence of operations."""
+    host_mock = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host_mock.run_shell_command.return_value = (True, output_mock)
+    host_mock.put_file.return_value = True
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    # Verify shell commands were run (apt update, docker, caddy, ufw, etc.)
+    cmds = [c.kwargs.get("command", c.args[0] if c.args else "")
+            for c in host_mock.run_shell_command.call_args_list]
+
+    # Should include key setup steps
+    assert any("apt-get update" in c for c in cmds), "Should run apt update"
+    assert any("docker-ce" in c for c in cmds), "Should install Docker"
+    assert any("caddy" in c for c in cmds), "Should install Caddy"
+    assert any("ufw" in c for c in cmds), "Should configure UFW"
+    assert any("fail2ban" in c for c in cmds), "Should install fail2ban"
+    assert any("unattended-upgrades" in c for c in cmds), "Should setup auto-updates"
+    assert any("mkdir" in c for c in cmds), "Should create directories"
+
+# %%
+#|export
+def test_init_server_writes_config_files():
+    """init_server writes Caddyfile, SSH hardening, and state files."""
+    host_mock = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host_mock.run_shell_command.return_value = (True, output_mock)
+    host_mock.put_file.return_value = True
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    # Collect all put_file calls: extract remote_filename from kwargs
+    written_files = {}
+    for c in host_mock.put_file.call_args_list:
+        remote_path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written_files[remote_path] = bio.getvalue().decode("utf-8")
+
+    assert "/etc/caddy/Caddyfile" in written_files
+    assert "import" in written_files["/etc/caddy/Caddyfile"]
+
+    assert "/etc/ssh/sshd_config.d/hardening.conf" in written_files
+    assert "PasswordAuthentication no" in written_files["/etc/ssh/sshd_config.d/hardening.conf"]
+
+    assert "/srv/appgarden/garden.json" in written_files
+    assert "/srv/appgarden/ports.json" in written_files

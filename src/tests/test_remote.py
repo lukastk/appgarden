@@ -4,7 +4,7 @@ __all__ = ['test_garden_state_roundtrip', 'test_ports_state_roundtrip', 'test_re
 
 # %% pts/tests/test_remote.pct.py 3
 import json
-from io import StringIO
+from io import BytesIO, StringIO
 from unittest.mock import MagicMock, patch, call
 
 from appgarden.remote import (
@@ -19,7 +19,7 @@ def test_read_remote_file():
     """read_remote_file calls host.get_file and returns content."""
     host = MagicMock()
     host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
-        filename_or_io.write("hello world") or True
+        filename_or_io.write(b"hello world") or True
     )
 
     result = read_remote_file(host, "/tmp/test.txt")
@@ -38,16 +38,16 @@ def test_read_remote_file_failure():
 
 # %% pts/tests/test_remote.pct.py 7
 def test_write_remote_file():
-    """write_remote_file calls host.put_file with a StringIO."""
+    """write_remote_file calls host.put_file with a BytesIO."""
     host = MagicMock()
     host.put_file.return_value = True
 
     write_remote_file(host, "/tmp/out.txt", "content")
     host.put_file.assert_called_once()
-    # Verify the content was passed via a StringIO
+    # Verify the content was passed via a BytesIO
     args = host.put_file.call_args
-    sio = args.kwargs["filename_or_io"]
-    assert sio.getvalue() == "content"
+    bio = args.kwargs["filename_or_io"]
+    assert bio.getvalue() == b"content"
 
 # %% pts/tests/test_remote.pct.py 8
 def test_write_remote_file_failure():
@@ -64,7 +64,7 @@ def test_run_remote_command():
     """run_remote_command returns stdout as a string."""
     host = MagicMock()
     output_mock = MagicMock()
-    output_mock.stdout.return_value = ["line1", "line2"]
+    output_mock.stdout = "line1\nline2"
     host.run_shell_command.return_value = (True, output_mock)
 
     result = run_remote_command(host, "ls /tmp")
@@ -76,7 +76,7 @@ def test_run_remote_command_failure():
     import pytest
     host = MagicMock()
     output_mock = MagicMock()
-    output_mock.stderr.return_value = ["error message"]
+    output_mock.stderr = "error message"
     host.run_shell_command.return_value = (False, output_mock)
 
     with pytest.raises(RuntimeError, match="Remote command failed"):
@@ -86,24 +86,24 @@ def test_run_remote_command_failure():
 def test_garden_state_roundtrip():
     """read/write garden state serialises JSON correctly."""
     state_data = {"apps": {"myapp": {"name": "myapp", "method": "static"}}}
-    written_content = None
+    written_bytes = None
 
     host = MagicMock()
 
-    # Capture what write_garden_state sends
+    # Capture what write_garden_state sends (BytesIO)
     def mock_put(filename_or_io, remote_filename, **kw):
-        nonlocal written_content
-        written_content = filename_or_io.getvalue()
+        nonlocal written_bytes
+        written_bytes = filename_or_io.getvalue()
         return True
     host.put_file.side_effect = mock_put
 
     write_garden_state(host, state_data)
-    assert written_content is not None
-    assert json.loads(written_content) == state_data
+    assert written_bytes is not None
+    assert json.loads(written_bytes.decode("utf-8")) == state_data
 
-    # Now mock read to return what was written
+    # Now mock read to return what was written (bytes into BytesIO)
     def mock_get(remote_filename, filename_or_io, **kw):
-        filename_or_io.write(written_content)
+        filename_or_io.write(written_bytes)
         return True
     host.get_file.side_effect = mock_get
 
@@ -114,21 +114,21 @@ def test_garden_state_roundtrip():
 def test_ports_state_roundtrip():
     """read/write ports state serialises JSON correctly."""
     ports_data = {"next_port": 10002, "allocated": {"10000": "app1", "10001": "app2"}}
-    written_content = None
+    written_bytes = None
 
     host = MagicMock()
 
     def mock_put(filename_or_io, remote_filename, **kw):
-        nonlocal written_content
-        written_content = filename_or_io.getvalue()
+        nonlocal written_bytes
+        written_bytes = filename_or_io.getvalue()
         return True
     host.put_file.side_effect = mock_put
 
     write_ports_state(host, ports_data)
-    assert json.loads(written_content) == ports_data
+    assert json.loads(written_bytes.decode("utf-8")) == ports_data
 
     def mock_get(remote_filename, filename_or_io, **kw):
-        filename_or_io.write(written_content)
+        filename_or_io.write(written_bytes)
         return True
     host.get_file.side_effect = mock_get
 

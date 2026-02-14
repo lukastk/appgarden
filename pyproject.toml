@@ -74,7 +74,7 @@ indent-style = "space"
 testpaths = ["src/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not integration'"
 pythonpath = ["src"]
 markers = [
     "integration: integration tests requiring a remote server",

@@ -5,7 +5,7 @@ __all__ = ['APPGARDEN_ROOT', 'GARDEN_STATE_PATH', 'PORTS_PATH', 'read_garden_sta
 # %% pts/appgarden/01_remote.pct.py 3
 import json
 from contextlib import contextmanager
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 from pyinfra.api import Config, Inventory, State
@@ -19,7 +19,7 @@ PORTS_PATH = f"{APPGARDEN_ROOT}/ports.json"
 
 # %% pts/appgarden/01_remote.pct.py 7
 @contextmanager
-def ssh_connect(server: ServerConfig):
+def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 3):
     """Context manager that yields a connected pyinfra Host object.
 
     Usage::
@@ -27,20 +27,39 @@ def ssh_connect(server: ServerConfig):
         with ssh_connect(server_config) as host:
             ok, out = host.run_shell_command("hostname")
     """
+    import time
+
     host_addr = resolve_host(server)
     ssh_key = str(Path(server.ssh_key).expanduser())
 
     inventory = Inventory(
         ([host_addr], {}),
-        ssh_user=server.ssh_user,
-        ssh_key=ssh_key,
+        override_data={
+            "ssh_user": server.ssh_user,
+            "ssh_key": ssh_key,
+            "ssh_strict_host_key_checking": "no",
+        },
     )
-    config = Config(CONNECT_TIMEOUT=10)
+    config = Config(CONNECT_TIMEOUT=connect_timeout)
     state = State(inventory, config)
     state.init(inventory, config)
 
     host = list(inventory)[0]
-    host.connect()
+
+    # Retry connection for freshly provisioned servers
+    last_err = None
+    for attempt in range(retries):
+        try:
+            host.connect(raise_exceptions=True)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(5)
+    if last_err is not None:
+        raise last_err
+
     try:
         yield host
     finally:
@@ -49,17 +68,17 @@ def ssh_connect(server: ServerConfig):
 # %% pts/appgarden/01_remote.pct.py 9
 def read_remote_file(host, path: str) -> str:
     """Read a text file from the remote server."""
-    buf = StringIO()
+    buf = BytesIO()
     ok = host.get_file(remote_filename=path, filename_or_io=buf,
                        print_output=False, print_input=False)
     if not ok:
         raise RuntimeError(f"Failed to read remote file: {path}")
-    return buf.getvalue()
+    return buf.getvalue().decode("utf-8")
 
 # %% pts/appgarden/01_remote.pct.py 10
 def write_remote_file(host, path: str, content: str) -> None:
     """Write text content to a file on the remote server."""
-    buf = StringIO(content)
+    buf = BytesIO(content.encode("utf-8"))
     ok = host.put_file(filename_or_io=buf, remote_filename=path,
                        print_output=False, print_input=False)
     if not ok:
@@ -70,11 +89,12 @@ def run_remote_command(host, cmd: str, timeout: int = 30) -> str:
     """Run a shell command on the remote and return stdout."""
     ok, output = host.run_shell_command(
         command=cmd, print_output=False, print_input=False,
+        _timeout=timeout,
     )
     if not ok:
-        stderr = "\n".join(output.stderr()) if output else ""
+        stderr = output.stderr if output else ""
         raise RuntimeError(f"Remote command failed: {cmd}\n{stderr}")
-    return "\n".join(output.stdout())
+    return output.stdout
 
 # %% pts/appgarden/01_remote.pct.py 13
 def read_garden_state(host) -> dict:
