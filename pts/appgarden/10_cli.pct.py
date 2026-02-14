@@ -35,6 +35,7 @@ from appgarden.apps import (
 )
 from appgarden.remote import ssh_connect
 from appgarden.environments import load_project_config, resolve_environment, resolve_all_environments
+from appgarden.tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_stale_tunnels
 
 # %% [markdown]
 # # CLI Application
@@ -621,6 +622,120 @@ def apps_redeploy(
             raise typer.Exit(code=1)
 
     console.print(f"App [bold]{name}[/bold] redeployed.")
+
+# %% [markdown]
+# ## Tunnel subcommand group
+
+# %%
+#|export
+tunnel_app = typer.Typer(
+    name="tunnel",
+    help="Manage localhost tunnels.",
+    no_args_is_help=True,
+)
+app.add_typer(tunnel_app, name="tunnel")
+
+# %% [markdown]
+# ### tunnel open
+
+# %%
+#|export
+@tunnel_app.command("open")
+def tunnel_open(
+    local_port: int = typer.Argument(help="Local port to expose"),
+    url: str = typer.Option(..., "--url", help="Public URL for the tunnel"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Open a tunnel to expose a local port with HTTPS."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    open_tunnel(srv, local_port, url)
+
+# %% [markdown]
+# ### tunnel list
+
+# %%
+#|export
+@tunnel_app.command("list")
+def tunnel_list(
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """List active tunnels."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        tunnels = list_tunnels(host)
+
+    if not tunnels:
+        console.print("No active tunnels.")
+        raise typer.Exit()
+
+    table = Table()
+    table.add_column("Tunnel ID")
+    table.add_column("URL")
+    table.add_column("Local Port")
+    table.add_column("Remote Port")
+    table.add_column("Created")
+
+    for t in tunnels:
+        table.add_row(t.tunnel_id, t.url, str(t.local_port), str(t.remote_port), t.created_at)
+
+    console.print(table)
+
+# %% [markdown]
+# ### tunnel close
+
+# %%
+#|export
+@tunnel_app.command("close")
+def tunnel_close(
+    tunnel_id: str = typer.Argument(help="Tunnel ID to close"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Close a tunnel and clean up resources."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    close_tunnel(srv, tunnel_id)
+    console.print(f"Tunnel [bold]{tunnel_id}[/bold] closed.")
+
+# %% [markdown]
+# ### tunnel cleanup
+
+# %%
+#|export
+@tunnel_app.command("cleanup")
+def tunnel_cleanup(
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Remove stale tunnels whose SSH connections are dead."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    cleaned = cleanup_stale_tunnels(srv)
+    if cleaned:
+        for tid in cleaned:
+            console.print(f"Cleaned up stale tunnel: {tid}")
+    else:
+        console.print("No stale tunnels found.")
 
 # %% [markdown]
 # ## Config subcommand group

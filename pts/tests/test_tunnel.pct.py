@@ -1,0 +1,245 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %%
+#|default_exp test_tunnel
+
+# %%
+#|hide
+from nblite import nbl_export; nbl_export();
+
+# %% [markdown]
+# # Tunnel Tests
+#
+# Unit tests for tunnel state management, Caddy config deployment,
+# and cleanup logic (mocked SSH).
+
+# %%
+#|export
+import json
+from unittest.mock import MagicMock, patch
+from io import BytesIO
+
+from appgarden.config import ServerConfig
+from appgarden.tunnel import (
+    _read_tunnels_state, _write_tunnels_state,
+    _tunnel_caddy_path, _deploy_tunnel_caddy,
+    _remove_tunnel_caddy, _register_tunnel, _unregister_tunnel,
+    list_tunnels, close_tunnel,
+    TUNNELS_STATE_FILE, TunnelInfo,
+)
+
+# %%
+#|export
+def _make_server():
+    return ServerConfig(
+        ssh_user="root", ssh_key="~/.ssh/id_rsa",
+        domain="apps.example.com", host="1.2.3.4",
+    )
+
+# %%
+#|export
+def _mock_host(tunnels_state=None, ports_state=None):
+    """Create a mock host with tunnel and port state."""
+    if tunnels_state is None:
+        tunnels_state = {"tunnels": {}}
+    if ports_state is None:
+        ports_state = {"next_port": 10000, "allocated": {}}
+
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+    host.put_file.return_value = True
+
+    def _mock_get(remote_filename, filename_or_io, **kw):
+        if "tunnels/active.json" in remote_filename:
+            data = tunnels_state
+        elif "ports.json" in remote_filename:
+            data = ports_state
+        else:
+            data = {"apps": {}}
+        filename_or_io.write(json.dumps(data).encode("utf-8"))
+        return True
+
+    host.get_file.side_effect = _mock_get
+    return host
+
+# %% [markdown]
+# ## Tunnel state
+
+# %%
+#|export
+def test_read_tunnels_state_empty():
+    """Empty tunnels state returns empty dict."""
+    host = _mock_host()
+    state = _read_tunnels_state(host)
+    assert state == {"tunnels": {}}
+
+# %%
+#|export
+def test_read_tunnels_state_with_tunnels():
+    """Reads existing tunnel entries."""
+    tunnels = {"tunnels": {"tunnel-abc": {"url": "test.example.com", "remote_port": 10000}}}
+    host = _mock_host(tunnels_state=tunnels)
+    state = _read_tunnels_state(host)
+    assert "tunnel-abc" in state["tunnels"]
+
+# %%
+#|export
+def test_write_tunnels_state():
+    """Writes tunnel state to the correct path."""
+    host = _mock_host()
+    state = {"tunnels": {"t1": {"url": "a.example.com"}}}
+    _write_tunnels_state(host, state)
+
+    # Check put_file was called with the correct path
+    calls = host.put_file.call_args_list
+    assert any(TUNNELS_STATE_FILE in c.kwargs.get("remote_filename", "") for c in calls)
+
+# %% [markdown]
+# ## Caddy config
+
+# %%
+#|export
+def test_tunnel_caddy_path():
+    """Caddy path includes tunnel ID."""
+    path = _tunnel_caddy_path("tunnel-abc123")
+    assert "tunnel-abc123.caddy" in path
+    assert "tunnels" in path
+
+# %%
+#|export
+def test_deploy_tunnel_caddy():
+    """Deploys Caddy config and reloads."""
+    host = _mock_host()
+    _deploy_tunnel_caddy(host, "tunnel-abc", "test.example.com", 10000)
+
+    # Should have written a caddy file
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    caddy_files = [p for p in written if p.endswith(".caddy")]
+    assert len(caddy_files) >= 1
+    caddy_content = written[caddy_files[0]]
+    assert "test.example.com" in caddy_content
+    assert "10000" in caddy_content
+
+    # Should have reloaded caddy
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("reload caddy" in c for c in cmds)
+
+# %%
+#|export
+def test_remove_tunnel_caddy():
+    """Removes Caddy config file and reloads."""
+    host = _mock_host()
+    _remove_tunnel_caddy(host, "tunnel-abc")
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("rm -f" in c and "tunnel-abc.caddy" in c for c in cmds)
+    assert any("reload caddy" in c for c in cmds)
+
+# %% [markdown]
+# ## Register / unregister
+
+# %%
+#|export
+def test_register_tunnel():
+    """Registers tunnel in active.json."""
+    host = _mock_host()
+    _register_tunnel(host, "tunnel-abc", "test.example.com", 3000, 10000)
+
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    tunnel_files = [v for k, v in written.items() if "active.json" in k]
+    assert len(tunnel_files) >= 1
+    data = json.loads(tunnel_files[-1])
+    assert "tunnel-abc" in data["tunnels"]
+    assert data["tunnels"]["tunnel-abc"]["url"] == "test.example.com"
+    assert data["tunnels"]["tunnel-abc"]["local_port"] == 3000
+    assert data["tunnels"]["tunnel-abc"]["remote_port"] == 10000
+
+# %%
+#|export
+def test_unregister_tunnel():
+    """Removes tunnel from active.json."""
+    existing = {"tunnels": {"tunnel-abc": {"url": "test.example.com"}}}
+    host = _mock_host(tunnels_state=existing)
+    _unregister_tunnel(host, "tunnel-abc")
+
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    tunnel_files = [v for k, v in written.items() if "active.json" in k]
+    assert len(tunnel_files) >= 1
+    data = json.loads(tunnel_files[-1])
+    assert "tunnel-abc" not in data["tunnels"]
+
+# %% [markdown]
+# ## list_tunnels
+
+# %%
+#|export
+def test_list_tunnels_empty():
+    """Empty active.json returns empty list."""
+    host = _mock_host()
+    tunnels = list_tunnels(host)
+    assert tunnels == []
+
+# %%
+#|export
+def test_list_tunnels_with_entries():
+    """Lists all tunnel entries."""
+    state = {"tunnels": {
+        "tunnel-1": {"url": "a.example.com", "local_port": 3000, "remote_port": 10000, "created_at": "2026-01-01"},
+        "tunnel-2": {"url": "b.example.com", "local_port": 8080, "remote_port": 10001, "created_at": "2026-01-02"},
+    }}
+    host = _mock_host(tunnels_state=state)
+    tunnels = list_tunnels(host)
+    assert len(tunnels) == 2
+    ids = {t.tunnel_id for t in tunnels}
+    assert ids == {"tunnel-1", "tunnel-2"}
+
+# %% [markdown]
+# ## close_tunnel
+
+# %%
+#|export
+def test_close_tunnel():
+    """close_tunnel removes Caddy config, releases port, unregisters."""
+    existing_tunnels = {"tunnels": {"tunnel-abc": {"url": "test.example.com", "remote_port": 10000}}}
+    existing_ports = {"next_port": 10001, "allocated": {"10000": "tunnel-abc"}}
+
+    with patch("appgarden.tunnel.ssh_connect") as mock_connect:
+        host = _mock_host(tunnels_state=existing_tunnels, ports_state=existing_ports)
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        close_tunnel(_make_server(), "tunnel-abc")
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+
+    # Should remove caddy config
+    assert any("rm -f" in c and "tunnel-abc.caddy" in c for c in cmds)
+
+    # Should reload caddy
+    assert any("reload caddy" in c for c in cmds)

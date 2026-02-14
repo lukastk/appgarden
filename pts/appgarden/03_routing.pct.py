@@ -35,6 +35,7 @@ from appgarden.config import ServerConfig
 # %%
 #|export
 CADDY_APPS_DIR = f"{APPGARDEN_ROOT}/caddy/apps"
+CADDY_TUNNELS_DIR = f"{APPGARDEN_ROOT}/caddy/tunnels"
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 _jinja_env = Environment(
