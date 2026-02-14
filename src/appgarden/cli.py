@@ -22,7 +22,7 @@ from .apps import (
     remove_app, redeploy_app, app_logs,
 )
 from .remote import (
-    ssh_connect,
+    ssh_connect, make_remote_context,
     validate_app_name, validate_domain, validate_url_path, validate_branch, validate_env_key,
 )
 from .environments import load_project_config, resolve_environment, resolve_all_environments
@@ -457,8 +457,9 @@ def apps_list(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
-        apps = list_apps_with_status(host)
+        apps = list_apps_with_status(host, ctx=ctx)
 
     if not apps:
         console.print("No apps deployed.")
@@ -490,9 +491,10 @@ def apps_status(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
         try:
-            status = app_status(host, name)
+            status = app_status(host, name, ctx=ctx)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -532,8 +534,9 @@ def apps_stop(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
-        stop_app(host, name)
+        stop_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] stopped.")
 
 # %% pts/appgarden/10_cli.pct.py 37
@@ -551,8 +554,9 @@ def apps_start(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
-        start_app(host, name)
+        start_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] started.")
 
 # %% pts/appgarden/10_cli.pct.py 38
@@ -570,8 +574,9 @@ def apps_restart(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
-        restart_app(host, name)
+        restart_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] restarted.")
 
 # %% pts/appgarden/10_cli.pct.py 40
@@ -590,8 +595,9 @@ def apps_logs(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
-        output = app_logs(host, name, lines=lines)
+        output = app_logs(host, name, lines=lines, ctx=ctx)
     console.print(output)
 
 # %% pts/appgarden/10_cli.pct.py 42
@@ -616,9 +622,10 @@ def apps_remove(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
+    ctx = make_remote_context(srv)
     with ssh_connect(srv) as host:
         try:
-            remove_app(host, name, keep_data=keep_data)
+            remove_app(host, name, keep_data=keep_data, ctx=ctx)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
