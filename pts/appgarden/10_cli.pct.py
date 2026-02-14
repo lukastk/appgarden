@@ -34,6 +34,7 @@ from appgarden.apps import (
     remove_app, redeploy_app, app_logs,
 )
 from appgarden.remote import ssh_connect
+from appgarden.environments import load_project_config, resolve_environment, resolve_all_environments
 
 # %% [markdown]
 # # CLI Application
@@ -233,35 +234,14 @@ def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
 
 # %%
 #|export
-@app.command()
-def deploy(
-    name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
-    method: str = typer.Option("static", "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
-    source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
-    url: Optional[str] = typer.Option(None, "--url", help="URL for the app"),
-    port: Optional[int] = typer.Option(None, "--port", "-p", help="Host port (auto-allocated if omitted)"),
-    container_port: int = typer.Option(3000, "--container-port", help="Container port (for dockerfile/auto methods)"),
-    cmd: Optional[str] = typer.Option(None, "--cmd", help="Start command (for command/auto methods)"),
-    setup_cmd: Optional[str] = typer.Option(None, "--setup-cmd", help="Setup/install command (for auto method)"),
-    branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
-    env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
-    env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
-):
-    """Deploy an application to a remote server."""
-    cfg = load_config()
-    try:
-        sname, srv = get_server(cfg, server)
-    except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(code=1)
-
-    if not url:
-        console.print("[red]Error:[/red] --url is required")
-        raise typer.Exit(code=1)
-
-    env_vars = _parse_env_list(env)
-
+def _dispatch_deploy(
+    srv: ServerConfig, name: str, method: str, url: str,
+    source: str | None = None, port: int | None = None,
+    container_port: int = 3000, cmd: str | None = None,
+    setup_cmd: str | None = None, branch: str | None = None,
+    env_vars: dict[str, str] | None = None, env_file: str | None = None,
+) -> None:
+    """Dispatch to the appropriate deploy function based on method."""
     if method == "static":
         if not source:
             console.print("[red]Error:[/red] --source is required for static deployments")
@@ -304,6 +284,106 @@ def deploy(
     else:
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
         raise typer.Exit(code=1)
+
+# %%
+#|export
+def _deploy_env(cfg, env_cfg, server_override: str | None = None) -> None:
+    """Deploy a single resolved environment config."""
+    server_name = server_override or env_cfg.server
+    try:
+        sname, srv = get_server(cfg, server_name)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if not env_cfg.url:
+        console.print(f"[red]Error:[/red] No URL defined for environment '{env_cfg.name}'")
+        raise typer.Exit(code=1)
+
+    if not env_cfg.method:
+        console.print(f"[red]Error:[/red] No method defined for environment '{env_cfg.name}'")
+        raise typer.Exit(code=1)
+
+    console.print(f"Deploying [bold]{env_cfg.app_name}[/bold] ({env_cfg.name}) to {env_cfg.url}...")
+    _dispatch_deploy(
+        srv, env_cfg.app_name, env_cfg.method, env_cfg.url,
+        source=env_cfg.source, port=env_cfg.port,
+        container_port=env_cfg.container_port or 3000,
+        cmd=env_cfg.cmd, setup_cmd=env_cfg.setup_cmd,
+        branch=env_cfg.branch,
+        env_vars=env_cfg.env or None,
+        env_file=env_cfg.env_file,
+    )
+
+# %%
+#|export
+@app.command()
+def deploy(
+    name: str = typer.Argument(help="App name or environment name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
+    source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
+    url: Optional[str] = typer.Option(None, "--url", help="URL for the app"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Host port (auto-allocated if omitted)"),
+    container_port: int = typer.Option(3000, "--container-port", help="Container port (for dockerfile/auto methods)"),
+    cmd: Optional[str] = typer.Option(None, "--cmd", help="Start command (for command/auto methods)"),
+    setup_cmd: Optional[str] = typer.Option(None, "--setup-cmd", help="Setup/install command (for auto method)"),
+    branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
+    env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
+    env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
+    all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
+):
+    """Deploy an application to a remote server.
+
+    If an appgarden.toml exists in the current directory, NAME can be an
+    environment name (e.g. 'production', 'staging'). Use --all-envs to
+    deploy all environments at once.
+    """
+    cfg = load_config()
+
+    # Check for appgarden.toml-based deployment
+    if all_envs:
+        try:
+            project = load_project_config()
+        except FileNotFoundError:
+            console.print("[red]Error:[/red] No appgarden.toml found in current directory")
+            raise typer.Exit(code=1)
+        envs = resolve_all_environments(project)
+        for env_cfg in envs:
+            _deploy_env(cfg, env_cfg, server_override=server)
+        return
+
+    # Try environment-based deploy if appgarden.toml exists
+    try:
+        project = load_project_config()
+        if name in project.environments:
+            env_cfg = resolve_environment(project, name)
+            _deploy_env(cfg, env_cfg, server_override=server)
+            return
+    except FileNotFoundError:
+        pass
+
+    # Fall back to explicit flag-based deployment
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if not url:
+        console.print("[red]Error:[/red] --url is required")
+        raise typer.Exit(code=1)
+
+    if not method:
+        method = "static"
+
+    env_vars = _parse_env_list(env)
+    _dispatch_deploy(
+        srv, name, method, url,
+        source=source, port=port, container_port=container_port,
+        cmd=cmd, setup_cmd=setup_cmd, branch=branch,
+        env_vars=env_vars, env_file=env_file,
+    )
 
 # %% [markdown]
 # ## Apps subcommand group
