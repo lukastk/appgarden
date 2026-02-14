@@ -26,6 +26,7 @@ from appgarden.config import (
     load_config, save_config, config_path, get_server,
 )
 from appgarden.server import init_server, ping_server
+from appgarden.deploy import deploy_static
 
 # %% [markdown]
 # # CLI Application
@@ -204,6 +205,41 @@ def server_ping_cmd(
         console.print(f"[green]Server '{sname}' is reachable.[/green]")
     else:
         console.print(f"[red]Server '{sname}' is not reachable.[/red]")
+        raise typer.Exit(code=1)
+
+# %% [markdown]
+# ## Deploy command
+
+# %%
+#|export
+@app.command()
+def deploy(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    method: str = typer.Option("static", "--method", "-m", help="Deployment method"),
+    source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
+    url: Optional[str] = typer.Option(None, "--url", help="URL for the app"),
+    branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
+):
+    """Deploy an application to a remote server."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if not url:
+        console.print("[red]Error:[/red] --url is required")
+        raise typer.Exit(code=1)
+
+    if method == "static":
+        if not source:
+            console.print("[red]Error:[/red] --source is required for static deployments")
+            raise typer.Exit(code=1)
+        deploy_static(srv, name, source, url, branch=branch)
+    else:
+        console.print(f"[red]Error:[/red] Method '{method}' is not yet implemented")
         raise typer.Exit(code=1)
 
 # %% [markdown]

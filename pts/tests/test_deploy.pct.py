@@ -1,0 +1,249 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %%
+#|default_exp test_deploy
+
+# %%
+#|hide
+from nblite import nbl_export; nbl_export();
+
+# %% [markdown]
+# # Deploy Tests
+#
+# Unit tests for deployment logic (mocked SSH).
+
+# %%
+#|export
+import json
+from unittest.mock import MagicMock, patch, call
+
+from appgarden.config import ServerConfig
+from appgarden.deploy import (
+    is_git_url,
+    deploy_static,
+    upload_source,
+    _app_dir,
+    _source_dir,
+)
+
+# %% [markdown]
+# ## is_git_url
+
+# %%
+#|export
+def test_is_git_url_https():
+    """HTTPS git URLs are detected."""
+    assert is_git_url("https://github.com/user/repo.git") is True
+    assert is_git_url("https://github.com/user/repo") is True
+
+# %%
+#|export
+def test_is_git_url_ssh():
+    """SSH git URLs are detected."""
+    assert is_git_url("git@github.com:user/repo.git") is True
+
+# %%
+#|export
+def test_is_git_url_git_protocol():
+    """git:// protocol URLs are detected."""
+    assert is_git_url("git://example.com/repo.git") is True
+
+# %%
+#|export
+def test_is_git_url_local_path():
+    """Local paths are not git URLs."""
+    assert is_git_url("/home/user/project") is False
+    assert is_git_url("./my-site") is False
+    assert is_git_url("../build") is False
+
+# %% [markdown]
+# ## deploy_static
+
+# %%
+#|export
+def _make_server():
+    return ServerConfig(
+        ssh_user="root", ssh_key="~/.ssh/id_rsa",
+        domain="apps.example.com", host="1.2.3.4",
+    )
+
+# %%
+#|export
+def _mock_host():
+    """Create a mock host with standard return values."""
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+    host.put_file.return_value = True
+    host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
+        filename_or_io.write(json.dumps({"apps": {}}).encode("utf-8")) or True
+    )
+    return host
+
+# %%
+#|export
+def test_deploy_static_subdomain():
+    """deploy_static uploads source, writes Caddy config, and registers app."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory") as mock_upload:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(_make_server(), "mysite", "/tmp/site", "mysite.apps.example.com")
+
+    # Should have uploaded the directory
+    mock_upload.assert_called_once()
+
+    # Collect all written files
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    # Should have written a Caddy config
+    caddy_files = [p for p in written if p.endswith(".caddy")]
+    assert len(caddy_files) == 1
+    caddy_content = written[caddy_files[0]]
+    assert "mysite.apps.example.com" in caddy_content
+    assert "file_server" in caddy_content
+
+    # Should have written garden.json
+    garden_files = [p for p in written if "garden.json" in p]
+    assert len(garden_files) == 1
+    garden = json.loads(written[garden_files[0]])
+    assert "mysite" in garden["apps"]
+    assert garden["apps"]["mysite"]["method"] == "static"
+    assert garden["apps"]["mysite"]["url"] == "mysite.apps.example.com"
+
+    # Should have written app.json
+    app_json_files = [p for p in written if "app.json" in p]
+    assert len(app_json_files) == 1
+
+# %%
+#|export
+def test_deploy_static_subdirectory():
+    """deploy_static with subdirectory URL creates correct routing."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory") as mock_upload:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(_make_server(), "docs", "/tmp/docs", "apps.example.com/docs")
+
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    # Check garden.json has subdirectory routing
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["docs"]["routing"] == "subdirectory"
+
+    # Caddy config should use handle_path
+    caddy_files = [p for p in written if p.endswith(".caddy")]
+    assert len(caddy_files) == 1
+    caddy_content = written[caddy_files[0]]
+    assert "handle_path /docs/*" in caddy_content
+
+# %%
+#|export
+def test_deploy_static_git_source():
+    """deploy_static with git URL clones instead of uploading."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(
+            _make_server(), "mysite",
+            "https://github.com/user/site.git",
+            "mysite.apps.example.com",
+        )
+
+    # Should have run git clone
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("git clone" in c for c in cmds), "Should git clone the source"
+
+    # Check garden state records source_type=git
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["mysite"]["source_type"] == "git"
+
+# %%
+#|export
+def test_deploy_static_git_with_branch():
+    """deploy_static with git URL and branch passes -b flag."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(
+            _make_server(), "mysite",
+            "https://github.com/user/site.git",
+            "mysite.apps.example.com",
+            branch="gh-pages",
+        )
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    clone_cmds = [c for c in cmds if "git clone" in c]
+    assert len(clone_cmds) == 1
+    assert "-b gh-pages" in clone_cmds[0]
+
+# %%
+#|export
+def test_deploy_static_registers_in_garden():
+    """deploy_static writes app entry to garden.json with correct fields."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(_make_server(), "blog", "/tmp/blog", "blog.apps.example.com")
+
+    # Find the garden.json write
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+
+    app = garden["apps"]["blog"]
+    assert app["name"] == "blog"
+    assert app["method"] == "static"
+    assert app["url"] == "blog.apps.example.com"
+    assert app["routing"] == "subdomain"
+    assert app["source_type"] == "local"
+    assert "created_at" in app
+    assert "updated_at" in app
