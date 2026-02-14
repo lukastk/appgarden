@@ -736,4 +736,8 @@ def config_show():
 # %% pts/appgarden/10_cli.pct.py 60
 def app_main() -> None:
     """Entry point for the appgarden CLI."""
-    app()
+    try:
+        app()
+    except ValueError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        raise SystemExit(1)

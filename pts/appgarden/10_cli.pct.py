@@ -858,4 +858,8 @@ def config_show():
 #|export
 def app_main() -> None:
     """Entry point for the appgarden CLI."""
-    app()
+    try:
+        app()
+    except ValueError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        raise SystemExit(1)

@@ -84,8 +84,15 @@ def load_config(path: Path | None = None) -> AppGardenConfig:
     with open(p, "rb") as f:
         raw = tomllib.load(f)
 
+    valid_keys = {f.name for f in ServerConfig.__dataclass_fields__.values()}
     servers = {}
     for name, sdata in raw.get("servers", {}).items():
+        unknown = set(sdata) - valid_keys
+        if unknown:
+            raise ValueError(
+                f"Unknown key(s) in [servers.{name}]: {', '.join(sorted(unknown))}. "
+                f"Valid keys: {', '.join(sorted(valid_keys))}"
+            )
         servers[name] = ServerConfig(**sdata)
 
     return AppGardenConfig(

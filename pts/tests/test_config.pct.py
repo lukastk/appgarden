@@ -343,3 +343,20 @@ def test_defaults_empty(tmp_path):
     save_config(cfg, p)
     loaded = load_config(p)
     assert loaded.defaults == {}
+
+# %%
+#|export
+def test_load_unknown_server_key(tmp_path):
+    """Unknown key in [servers.*] raises ValueError with helpful message."""
+    import pytest
+    p = tmp_path / "config.toml"
+    p.write_text("""\
+[servers.bad]
+ssh_user = "root"
+ssh_key = "k"
+domain = "d.com"
+host = "1.1.1.1"
+bogus = "oops"
+""")
+    with pytest.raises(ValueError, match="Unknown key.*servers.bad.*bogus"):
+        load_config(p)
