@@ -28,6 +28,12 @@ from appgarden.config import (
 from appgarden.server import init_server, ping_server
 from appgarden.deploy import deploy_static, deploy_command, deploy_docker_compose, deploy_dockerfile
 from appgarden.auto_docker import deploy_auto
+from appgarden.apps import (
+    list_apps, list_apps_with_status, app_status,
+    stop_app, start_app, restart_app,
+    remove_app, redeploy_app, app_logs,
+)
+from appgarden.remote import ssh_connect
 
 # %% [markdown]
 # # CLI Application
@@ -298,6 +304,243 @@ def deploy(
     else:
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
         raise typer.Exit(code=1)
+
+# %% [markdown]
+# ## Apps subcommand group
+
+# %%
+#|export
+apps_app = typer.Typer(
+    name="apps",
+    help="Manage deployed applications.",
+    no_args_is_help=True,
+)
+app.add_typer(apps_app, name="apps")
+
+# %% [markdown]
+# ### apps list
+
+# %%
+#|export
+@apps_app.command("list")
+def apps_list(
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """List all deployed applications."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        apps = list_apps_with_status(host)
+
+    if not apps:
+        console.print("No apps deployed.")
+        raise typer.Exit()
+
+    table = Table()
+    table.add_column("Name")
+    table.add_column("Method")
+    table.add_column("URL")
+    table.add_column("Status")
+
+    for a in apps:
+        table.add_row(a.name, a.method, a.url, a.status or "unknown")
+
+    console.print(table)
+
+# %% [markdown]
+# ### apps status
+
+# %%
+#|export
+@apps_app.command("status")
+def apps_status(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Show detailed status for an app."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        try:
+            status = app_status(host, name)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    table = Table(show_header=False)
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    table.add_row("Name", status.name)
+    table.add_row("Method", status.method)
+    table.add_row("URL", status.url)
+    table.add_row("Routing", status.routing)
+    table.add_row("Port", str(status.port) if status.port else "-")
+    table.add_row("Status", status.status)
+    if status.source:
+        table.add_row("Source", status.source)
+    if status.source_type:
+        table.add_row("Source Type", status.source_type)
+    if status.created_at:
+        table.add_row("Created", status.created_at)
+    if status.updated_at:
+        table.add_row("Updated", status.updated_at)
+
+    console.print(table)
+
+# %% [markdown]
+# ### apps stop / start / restart
+
+# %%
+#|export
+@apps_app.command("stop")
+def apps_stop(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Stop an app."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        stop_app(host, name)
+    console.print(f"App [bold]{name}[/bold] stopped.")
+
+# %%
+#|export
+@apps_app.command("start")
+def apps_start(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Start an app."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        start_app(host, name)
+    console.print(f"App [bold]{name}[/bold] started.")
+
+# %%
+#|export
+@apps_app.command("restart")
+def apps_restart(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Restart an app."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        restart_app(host, name)
+    console.print(f"App [bold]{name}[/bold] restarted.")
+
+# %% [markdown]
+# ### apps logs
+
+# %%
+#|export
+@apps_app.command("logs")
+def apps_logs(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of log lines"),
+):
+    """Show logs for an app."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        output = app_logs(host, name, lines=lines)
+    console.print(output)
+
+# %% [markdown]
+# ### apps remove
+
+# %%
+#|export
+@apps_app.command("remove")
+def apps_remove(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    keep_data: bool = typer.Option(False, "--keep-data", help="Preserve the data/ directory"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Remove an app and all its resources."""
+    if not yes:
+        confirm = typer.confirm(f"Remove app '{name}'? This cannot be undone.")
+        if not confirm:
+            raise typer.Abort()
+
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    with ssh_connect(srv) as host:
+        try:
+            remove_app(host, name, keep_data=keep_data)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    console.print(f"App [bold]{name}[/bold] removed.")
+
+# %% [markdown]
+# ### apps redeploy
+
+# %%
+#|export
+@apps_app.command("redeploy")
+def apps_redeploy(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Redeploy an app (update source, rebuild, restart)."""
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(f"Redeploying [bold]{name}[/bold]...")
+    with ssh_connect(srv) as host:
+        try:
+            redeploy_app(srv, host, name)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    console.print(f"App [bold]{name}[/bold] redeployed.")
 
 # %% [markdown]
 # ## Config subcommand group
