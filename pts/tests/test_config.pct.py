@@ -314,3 +314,32 @@ def test_cli_config_show(tmp_path, monkeypatch):
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0
     assert "s1" in result.output
+
+# %% [markdown]
+# ## Global defaults
+
+# %%
+#|export
+def test_defaults_roundtrip(tmp_path):
+    """Save/load config with [defaults] section preserves values."""
+    p = tmp_path / "config.toml"
+    cfg = AppGardenConfig(
+        default_server="s1",
+        servers={"s1": ServerConfig(ssh_user="root", ssh_key="k", domain="d.com", host="1.1.1.1")},
+        defaults={"method": "dockerfile", "container_port": 8080},
+    )
+    save_config(cfg, p)
+    loaded = load_config(p)
+    assert loaded.defaults == {"method": "dockerfile", "container_port": 8080}
+
+# %%
+#|export
+def test_defaults_empty(tmp_path):
+    """Missing [defaults] returns empty dict."""
+    p = tmp_path / "config.toml"
+    cfg = AppGardenConfig(
+        servers={"s1": ServerConfig(ssh_user="root", ssh_key="k", domain="d.com", host="1.1.1.1")},
+    )
+    save_config(cfg, p)
+    loaded = load_config(p)
+    assert loaded.defaults == {}

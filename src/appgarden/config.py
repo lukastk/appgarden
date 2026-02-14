@@ -7,6 +7,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 
@@ -27,6 +28,7 @@ class AppGardenConfig:
     """Top-level AppGarden configuration."""
     default_server: str | None = None
     servers: dict[str, ServerConfig] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
 
 # %% pts/appgarden/00_config.pct.py 8
 def config_dir() -> Path:
@@ -57,6 +59,7 @@ def load_config(path: Path | None = None) -> AppGardenConfig:
     return AppGardenConfig(
         default_server=raw.get("default_server"),
         servers=servers,
+        defaults=dict(raw.get("defaults", {})),
     )
 
 # %% pts/appgarden/00_config.pct.py 12
@@ -68,6 +71,9 @@ def save_config(config: AppGardenConfig, path: Path | None = None) -> None:
     raw: dict = {}
     if config.default_server is not None:
         raw["default_server"] = config.default_server
+
+    if config.defaults:
+        raw["defaults"] = dict(config.defaults)
 
     if config.servers:
         raw["servers"] = {}

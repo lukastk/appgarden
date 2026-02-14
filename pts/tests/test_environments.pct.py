@@ -29,6 +29,7 @@ from appgarden.environments import (
     derive_app_name, list_environments,
     ProjectConfig, EnvironmentConfig,
 )
+from appgarden.cli import _resolve_deploy_params, DEPLOY_DEFAULTS
 
 # %% [markdown]
 # ## Sample TOML content
@@ -200,3 +201,47 @@ def test_resolve_all_environments(tmp_path):
     assert len(envs) == 3
     names = {e.app_name for e in envs}
     assert names == {"mywebsite", "mywebsite-staging", "mywebsite-dev"}
+
+# %% [markdown]
+# ## Cascading config resolution
+
+# %%
+#|export
+def test_cascade_cli_overrides_env():
+    """CLI flags override environment config values."""
+    env_cfg = {"method": "dockerfile", "branch": "main", "url": "app.example.com"}
+    cli = {"branch": "hotfix", "method": None, "url": None}
+    result = _resolve_deploy_params(cli, env_cfg=env_cfg)
+    assert result["branch"] == "hotfix"
+    assert result["method"] == "dockerfile"
+    assert result["url"] == "app.example.com"
+
+# %%
+#|export
+def test_cascade_global_defaults():
+    """Global defaults fill in values not set by other layers."""
+    cli = {"method": None, "source": None}
+    global_defaults = {"method": "dockerfile", "container_port": 8080}
+    result = _resolve_deploy_params(cli, global_defaults=global_defaults)
+    assert result["method"] == "dockerfile"
+    assert result["container_port"] == 8080
+
+# %%
+#|export
+def test_cascade_full():
+    """Full cascade: hardcoded < global < project < env < CLI."""
+    global_defaults = {"method": "command", "container_port": 9090}
+    project_defaults = {"method": "dockerfile", "source": "."}
+    env_cfg = {"url": "app.example.com", "branch": "main"}
+    cli = {"branch": "hotfix", "method": None, "source": None, "url": None}
+    result = _resolve_deploy_params(cli, env_cfg=env_cfg, project_defaults=project_defaults, global_defaults=global_defaults)
+    # CLI overrides branch
+    assert result["branch"] == "hotfix"
+    # env provides url
+    assert result["url"] == "app.example.com"
+    # project overrides global for method
+    assert result["method"] == "dockerfile"
+    # project provides source
+    assert result["source"] == "."
+    # global overrides hardcoded for container_port
+    assert result["container_port"] == 9090
