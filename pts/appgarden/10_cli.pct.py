@@ -26,7 +26,8 @@ from appgarden.config import (
     load_config, save_config, config_path, get_server,
 )
 from appgarden.server import init_server, ping_server
-from appgarden.deploy import deploy_static
+from appgarden.deploy import deploy_static, deploy_command, deploy_docker_compose, deploy_dockerfile
+from appgarden.auto_docker import deploy_auto
 
 # %% [markdown]
 # # CLI Application
@@ -212,14 +213,34 @@ def server_ping_cmd(
 
 # %%
 #|export
+def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
+    """Parse a list of KEY=VALUE strings into a dict."""
+    if not env:
+        return None
+    result = {}
+    for item in env:
+        if "=" not in item:
+            raise typer.BadParameter(f"Invalid env format: '{item}' (expected KEY=VALUE)")
+        k, v = item.split("=", 1)
+        result[k] = v
+    return result
+
+# %%
+#|export
 @app.command()
 def deploy(
     name: str = typer.Argument(help="App name"),
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
-    method: str = typer.Option("static", "--method", "-m", help="Deployment method"),
+    method: str = typer.Option("static", "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
     source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
     url: Optional[str] = typer.Option(None, "--url", help="URL for the app"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Host port (auto-allocated if omitted)"),
+    container_port: int = typer.Option(3000, "--container-port", help="Container port (for dockerfile/auto methods)"),
+    cmd: Optional[str] = typer.Option(None, "--cmd", help="Start command (for command/auto methods)"),
+    setup_cmd: Optional[str] = typer.Option(None, "--setup-cmd", help="Setup/install command (for auto method)"),
     branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
+    env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
+    env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
 ):
     """Deploy an application to a remote server."""
     cfg = load_config()
@@ -233,13 +254,49 @@ def deploy(
         console.print("[red]Error:[/red] --url is required")
         raise typer.Exit(code=1)
 
+    env_vars = _parse_env_list(env)
+
     if method == "static":
         if not source:
             console.print("[red]Error:[/red] --source is required for static deployments")
             raise typer.Exit(code=1)
         deploy_static(srv, name, source, url, branch=branch)
+
+    elif method == "command":
+        if not cmd:
+            console.print("[red]Error:[/red] --cmd is required for command deployments")
+            raise typer.Exit(code=1)
+        deploy_command(srv, name, cmd, url, port=port, source=source,
+                       branch=branch, env_vars=env_vars, env_file=env_file)
+
+    elif method == "docker-compose":
+        if not source:
+            console.print("[red]Error:[/red] --source is required for docker-compose deployments")
+            raise typer.Exit(code=1)
+        deploy_docker_compose(srv, name, source, url, port=port,
+                              branch=branch, env_vars=env_vars, env_file=env_file)
+
+    elif method == "dockerfile":
+        if not source:
+            console.print("[red]Error:[/red] --source is required for dockerfile deployments")
+            raise typer.Exit(code=1)
+        deploy_dockerfile(srv, name, source, url, port=port,
+                          container_port=container_port, branch=branch,
+                          env_vars=env_vars, env_file=env_file)
+
+    elif method == "auto":
+        if not source:
+            console.print("[red]Error:[/red] --source is required for auto deployments")
+            raise typer.Exit(code=1)
+        if not cmd:
+            console.print("[red]Error:[/red] --cmd is required for auto deployments")
+            raise typer.Exit(code=1)
+        deploy_auto(srv, name, source, cmd, url, port=port,
+                    container_port=container_port, setup_cmd=setup_cmd,
+                    branch=branch, env_vars=env_vars, env_file=env_file)
+
     else:
-        console.print(f"[red]Error:[/red] Method '{method}' is not yet implemented")
+        console.print(f"[red]Error:[/red] Unknown method '{method}'")
         raise typer.Exit(code=1)
 
 # %% [markdown]

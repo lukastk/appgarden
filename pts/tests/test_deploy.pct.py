@@ -27,9 +27,13 @@ from appgarden.config import ServerConfig
 from appgarden.deploy import (
     is_git_url,
     deploy_static,
+    deploy_command,
+    deploy_docker_compose,
+    deploy_dockerfile,
     upload_source,
     _app_dir,
     _source_dir,
+    _write_env_file,
 )
 
 # %% [markdown]
@@ -82,9 +86,16 @@ def _mock_host():
     output_mock.stdout = ""
     host.run_shell_command.return_value = (True, output_mock)
     host.put_file.return_value = True
-    host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
-        filename_or_io.write(json.dumps({"apps": {}}).encode("utf-8")) or True
-    )
+
+    def _mock_get(remote_filename, filename_or_io, **kw):
+        if "ports.json" in remote_filename:
+            data = {"next_port": 10000, "allocated": {}}
+        else:
+            data = {"apps": {}}
+        filename_or_io.write(json.dumps(data).encode("utf-8"))
+        return True
+
+    host.get_file.side_effect = _mock_get
     return host
 
 # %%
@@ -247,3 +258,150 @@ def test_deploy_static_registers_in_garden():
     assert app["source_type"] == "local"
     assert "created_at" in app
     assert "updated_at" in app
+
+# %% [markdown]
+# ## Helper to extract written files from mock
+
+# %%
+#|export
+def _get_written_files(host):
+    """Extract all files written via put_file on a mock host."""
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[path] = bio.getvalue().decode("utf-8")
+    return written
+
+# %% [markdown]
+# ## deploy_command
+
+# %%
+#|export
+def test_deploy_command_creates_systemd_unit():
+    """deploy_command creates a systemd unit with PORT env var."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_command(
+            _make_server(), "myapp", "python app.py",
+            "myapp.apps.example.com", source="/tmp/src",
+        )
+
+    written = _get_written_files(host)
+
+    # Should have a systemd unit
+    unit_files = [p for p in written if p.endswith(".service")]
+    assert len(unit_files) == 1
+    unit_content = written[unit_files[0]]
+    assert "python app.py" in unit_content
+    assert "PORT=10000" in unit_content
+
+    # Should have registered with method=command
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["myapp"]["method"] == "command"
+    assert garden["apps"]["myapp"]["port"] == 10000
+
+# %%
+#|export
+def test_deploy_command_with_env():
+    """deploy_command writes .env file with correct permissions."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_command(
+            _make_server(), "myapp", "node server.js",
+            "myapp.apps.example.com",
+            env_vars={"SECRET": "abc123"},
+        )
+
+    written = _get_written_files(host)
+
+    # Should have written .env file
+    env_files = [p for p in written if p.endswith("/.env")]
+    assert len(env_files) == 1
+    assert "SECRET=abc123" in written[env_files[0]]
+
+    # Should have chmod 600
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("chmod 600" in c for c in cmds)
+
+# %% [markdown]
+# ## deploy_docker_compose
+
+# %%
+#|export
+def test_deploy_docker_compose_creates_systemd():
+    """deploy_docker_compose creates systemd unit with docker compose up."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_docker_compose(
+            _make_server(), "mystack", "/tmp/compose-project",
+            "mystack.apps.example.com",
+        )
+
+    written = _get_written_files(host)
+
+    unit_files = [p for p in written if p.endswith(".service")]
+    assert len(unit_files) == 1
+    unit_content = written[unit_files[0]]
+    assert "docker compose up" in unit_content
+    assert "docker compose down" in unit_content
+    assert "docker.service" in unit_content
+
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["mystack"]["method"] == "docker-compose"
+
+# %% [markdown]
+# ## deploy_dockerfile
+
+# %%
+#|export
+def test_deploy_dockerfile_builds_and_creates_compose():
+    """deploy_dockerfile builds image and generates docker-compose.yml."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_dockerfile(
+            _make_server(), "webapp", "/tmp/app",
+            "webapp.apps.example.com",
+            container_port=8080,
+        )
+
+    # Should have run docker build
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("docker build" in c and "appgarden-webapp" in c for c in cmds)
+
+    written = _get_written_files(host)
+
+    # Should have generated docker-compose.yml with image reference
+    compose_files = [p for p in written if "docker-compose.yml" in p]
+    assert len(compose_files) == 1
+    compose_content = written[compose_files[0]]
+    assert "appgarden-webapp" in compose_content
+    assert "10000:8080" in compose_content
+
+    # Should register with method=dockerfile
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["webapp"]["method"] == "dockerfile"
+    assert garden["apps"]["webapp"]["container_port"] == 8080
