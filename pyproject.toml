@@ -21,6 +21,7 @@ dev = [
     "pytest>=9.0",
     "nblite>=1.1.5",
     "python-dotenv>=1.0",
+    "ruff>=0.8",
 ]
 
 [build-system]
