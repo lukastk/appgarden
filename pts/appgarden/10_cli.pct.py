@@ -380,7 +380,8 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
     """Convert an EnvironmentConfig to a dict for cascading, dropping None/empty values."""
     d = {}
     for key in ("server", "method", "url", "source", "port", "container_port",
-                "cmd", "setup_cmd", "branch", "env_file"):
+                "cmd", "setup_cmd", "branch", "env_file",
+                "subdomain", "path", "domain"):
         val = getattr(env_cfg, key, None)
         if val is not None:
             d[key] = val

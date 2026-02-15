@@ -29,7 +29,7 @@ from appgarden.environments import (
     derive_app_name, list_environments,
     ProjectConfig, EnvironmentConfig,
 )
-from appgarden.cli import _resolve_deploy_params, DEPLOY_DEFAULTS
+from appgarden.cli import _resolve_deploy_params, _env_config_to_dict, DEPLOY_DEFAULTS
 
 # %% [markdown]
 # ## Sample TOML content
@@ -245,3 +245,92 @@ def test_cascade_full():
     assert result["source"] == "."
     # global overrides hardcoded for container_port
     assert result["container_port"] == 9090
+
+# %% [markdown]
+# ## Subdomain / path / domain fields
+
+# %%
+#|export
+def test_resolve_subdomain(tmp_path):
+    """Environment with subdomain is preserved through resolution."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+
+[environments.production]
+subdomain = "myapp"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.subdomain == "myapp"
+    assert env.url is None
+
+# %%
+#|export
+def test_resolve_path_prefix(tmp_path):
+    """Environment with path is preserved through resolution."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+
+[environments.production]
+path = "api"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.path == "api"
+    assert env.subdomain is None
+
+# %%
+#|export
+def test_cascade_subdomain_overrides_app_default(tmp_path):
+    """Subdomain at [app] level can be overridden per environment."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+subdomain = "default-sub"
+
+[environments.production]
+subdomain = "prod-sub"
+
+[environments.staging]
+server = "myserver"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+
+    prod = resolve_environment(cfg, "production")
+    assert prod.subdomain == "prod-sub"
+
+    staging = resolve_environment(cfg, "staging")
+    assert staging.subdomain == "default-sub"
+
+# %%
+#|export
+def test_cascade_subdomain_to_deploy_params(tmp_path):
+    """Subdomain from env config flows through _env_config_to_dict into deploy params."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+source = "."
+
+[environments.production]
+subdomain = "myapp"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    env_dict = _env_config_to_dict(env)
+    assert env_dict["subdomain"] == "myapp"
+
+    cli = {"method": None, "source": None, "url": None, "subdomain": None}
+    params = _resolve_deploy_params(cli, env_cfg=env_dict)
+    assert params["subdomain"] == "myapp"
+    assert params["method"] == "dockerfile"
+    assert params["source"] == "."

@@ -5,7 +5,7 @@ container_port = 3000
 source = "."
 
 [environments.production]
-url = "test-app.lukastk.dev"
+subdomain = "test-app"
 
 [environments.dev]
-url = "test-app-dev.lukastk.dev"
+subdomain = "test-app-dev"

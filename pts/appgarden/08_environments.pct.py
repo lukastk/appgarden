@@ -45,6 +45,9 @@ class EnvironmentConfig:
     cmd: str | None = None
     setup_cmd: str | None = None
     branch: str | None = None
+    subdomain: str | None = None
+    path: str | None = None
+    domain: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     env_file: str | None = None
 
@@ -150,6 +153,9 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         cmd=merged.get("cmd"),
         setup_cmd=merged.get("setup_cmd"),
         branch=merged.get("branch"),
+        subdomain=merged.get("subdomain"),
+        path=merged.get("path"),
+        domain=merged.get("domain"),
         env=merged_env,
         env_file=merged.get("env_file"),
     )
