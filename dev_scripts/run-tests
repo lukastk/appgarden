@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+REPO_FOLDER="$(dirname "$(dirname "$0")")"
+PREV_CWD=$(pwd)
+cd "$REPO_FOLDER"
+
+nbl export --reverse && nbl export
+
+uv run pytest src/tests/ -v -m "not integration"
+RES_PYTEST=$?
+
+uv run ruff check src/appgarden
+RES_LINT=$?
+
+echo -e "\n\n"
+
+echo "pytest:  $([[ $RES_PYTEST == 0 ]] && echo Passed || echo Failed)"
+echo "lint:    $([[ $RES_LINT   == 0 ]] && echo Passed || echo Failed)"
+
+# Exit with failure if either failed
+[[ $RES_PYTEST == 0 && $RES_LINT == 0 ]]
+
+cd "$PREV_CWD"
