@@ -23,7 +23,7 @@ from nblite import nbl_export; nbl_export();
 from unittest.mock import patch, MagicMock
 
 from appgarden.config import (
-    AppGardenConfig, ServerConfig,
+    AppGardenConfig, ServerConfig, InitConfig,
     load_config, save_config, resolve_host, get_server,
 )
 
@@ -360,3 +360,59 @@ bogus = "oops"
 """)
     with pytest.raises(ValueError, match="Unknown key.*servers.bad.*bogus"):
         load_config(p)
+
+# %% [markdown]
+# ## InitConfig
+
+# %%
+#|export
+def test_init_config_roundtrip(tmp_path):
+    """Save/load config with [servers.X.init] preserves skip list."""
+    p = tmp_path / "config.toml"
+    cfg = AppGardenConfig(
+        default_server="s1",
+        servers={
+            "s1": ServerConfig(
+                ssh_user="root", ssh_key="k", domain="d.com", host="1.1.1.1",
+                init=InitConfig(skip=["docker", "firewall"]),
+            ),
+        },
+    )
+    save_config(cfg, p)
+    loaded = load_config(p)
+    assert loaded.servers["s1"].init.skip == ["docker", "firewall"]
+
+# %%
+#|export
+def test_init_config_empty_skip_not_written(tmp_path):
+    """Empty skip list is omitted from TOML output."""
+    p = tmp_path / "config.toml"
+    cfg = AppGardenConfig(
+        servers={
+            "s1": ServerConfig(ssh_user="root", ssh_key="k", domain="d.com", host="1.1.1.1"),
+        },
+    )
+    save_config(cfg, p)
+    text = p.read_text()
+    assert "init" not in text
+    # But loading still gives default InitConfig
+    loaded = load_config(p)
+    assert loaded.servers["s1"].init.skip == []
+
+# %%
+#|export
+def test_init_config_loaded_from_toml(tmp_path):
+    """[servers.X.init] sub-table is correctly parsed."""
+    p = tmp_path / "config.toml"
+    p.write_text("""\
+[servers.myserver]
+ssh_user = "root"
+ssh_key = "k"
+domain = "d.com"
+host = "1.1.1.1"
+
+[servers.myserver.init]
+skip = ["update", "ssh", "fail2ban"]
+""")
+    loaded = load_config(p)
+    assert loaded.servers["myserver"].init.skip == ["update", "ssh", "fail2ban"]

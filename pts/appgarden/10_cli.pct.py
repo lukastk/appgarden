@@ -25,7 +25,7 @@ from appgarden.config import (
     AppGardenConfig, ServerConfig,
     load_config, save_config, config_path, get_server,
 )
-from appgarden.server import init_server, ping_server
+from appgarden.server import init_server, ping_server, INIT_STEPS
 from appgarden.deploy import deploy_static, deploy_command, deploy_docker_compose, deploy_dockerfile
 from appgarden.auto_docker import deploy_auto
 from appgarden.apps import (
@@ -235,6 +235,8 @@ def server_default(
 @server_app.command("init")
 def server_init_cmd(
     name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
+    skip: Optional[list[str]] = typer.Option(None, "--skip", help="Skip optional steps (update, docker, caddy, firewall, ssh, fail2ban, upgrades)"),
+    minimal: bool = typer.Option(False, "--minimal", help="Only run essential steps (skip all optional)"),
 ):
     """Initialise a server for AppGarden (installs Docker, Caddy, etc.)."""
     cfg = load_config()
@@ -243,7 +245,23 @@ def server_init_cmd(
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
-    init_server(srv)
+
+    # Build merged skip set: CLI --skip > --minimal > config init.skip
+    if minimal:
+        merged_skip = set(INIT_STEPS)
+    else:
+        merged_skip = set(srv.init.skip)
+        if skip:
+            merged_skip |= set(skip)
+
+    # Validate skip values
+    invalid = merged_skip - INIT_STEPS
+    if invalid:
+        console.print(f"[red]Error:[/red] Unknown init step(s): {', '.join(sorted(invalid))}. "
+                       f"Valid steps: {', '.join(sorted(INIT_STEPS))}")
+        raise typer.Exit(code=1)
+
+    init_server(srv, skip=merged_skip)
 
 # %% [markdown]
 # ### server ping

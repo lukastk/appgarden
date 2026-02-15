@@ -36,6 +36,11 @@ import tomli_w
 # %%
 #|export
 @dataclass
+class InitConfig:
+    """Per-server init step configuration."""
+    skip: list[str] = field(default_factory=list)
+
+@dataclass
 class ServerConfig:
     """Configuration for a single server."""
     ssh_user: str
@@ -45,6 +50,7 @@ class ServerConfig:
     hcloud_name: str | None = None
     hcloud_context: str | None = None
     app_root: str | None = None  # default None → "/srv/appgarden"
+    init: InitConfig = field(default_factory=InitConfig)
 
 # %%
 #|export
@@ -89,13 +95,18 @@ def load_config(path: Path | None = None) -> AppGardenConfig:
     valid_keys = {f.name for f in ServerConfig.__dataclass_fields__.values()}
     servers = {}
     for name, sdata in raw.get("servers", {}).items():
+        sdata = dict(sdata)  # copy so we can pop
+        # Parse nested [servers.X.init] sub-table
+        init_data = sdata.pop("init", None)
+        init_cfg = InitConfig(**init_data) if init_data else InitConfig()
+
         unknown = set(sdata) - valid_keys
         if unknown:
             raise ValueError(
                 f"Unknown key(s) in [servers.{name}]: {', '.join(sorted(unknown))}. "
                 f"Valid keys: {', '.join(sorted(valid_keys))}"
             )
-        servers[name] = ServerConfig(**sdata)
+        servers[name] = ServerConfig(**sdata, init=init_cfg)
 
     return AppGardenConfig(
         default_server=raw.get("default_server"),
@@ -122,7 +133,12 @@ def save_config(config: AppGardenConfig, path: Path | None = None) -> None:
         for name, srv in config.servers.items():
             d = asdict(srv)
             # Drop None values for cleaner TOML
-            raw["servers"][name] = {k: v for k, v in d.items() if v is not None}
+            d = {k: v for k, v in d.items() if v is not None}
+            # Only include init sub-table if it has content
+            init_d = d.pop("init", {})
+            if init_d and init_d.get("skip"):
+                d["init"] = init_d
+            raw["servers"][name] = d
 
     with open(p, "wb") as f:
         tomli_w.dump(raw, f)

@@ -28,9 +28,11 @@ def test_caddy_installed(initialized_server):
 
 # %% pts/tests/integration/test_server_init.pct.py 7
 def test_caddy_config(initialized_server):
-    """Root Caddyfile imports appgarden configs."""
+    """Root Caddyfile contains appgarden managed block with imports."""
     with ssh_connect(initialized_server) as host:
         content = read_remote_file(host, "/etc/caddy/Caddyfile")
+        assert "# BEGIN APPGARDEN MANAGED BLOCK" in content
+        assert "# END APPGARDEN MANAGED BLOCK" in content
         assert "/srv/appgarden/caddy/apps/*.caddy" in content
         assert "/srv/appgarden/caddy/tunnels/*.caddy" in content
 
