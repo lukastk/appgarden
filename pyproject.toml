@@ -57,10 +57,22 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "*.pct.py" = [
-    "I001", # Unsorted imports
-    "E701", # Multiple statements on one line
-    "E702", # Multiple statements on one line semicolon
-    "E703", # useless-semicolon
+    "I001",  # Unsorted imports
+    "E265",  # Block comment formatting (protects #|export directives)
+    "E701",  # Multiple statements on one line
+    "E702",  # Multiple statements on one line semicolon
+    "E703",  # useless-semicolon
+]
+"src/appgarden/*.py" = [
+    "I001",  # Unsorted imports (nblite export artifact)
+    "F401",  # Unused imports (nblite export artifact)
+    "F811",  # Redefined unused name (nblite export artifact)
+    "F821",  # Undefined name in string annotations (nblite export artifact)
+    "F841",  # Unused variables (nblite export artifact)
+    "E402",  # Module-level import not at top (nblite export artifact)
+    "UP017", # datetime.UTC alias
+    "UP045", # Optional[X] -> X | None (Typer needs Optional[] syntax)
+    "B904",  # raise from in except (intentional CLI error pattern)
 ]
 
 [tool.ruff.lint.isort]
