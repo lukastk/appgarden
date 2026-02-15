@@ -39,18 +39,22 @@ appgarden/
 │   │   ├── 07_auto_docker.pct.py  # Auto Dockerfile generation
 │   │   ├── 08_environments.pct.py # Environment handling
 │   │   ├── 09_tunnel.pct.py       # Localhost tunneling
-│   │   └── 10_cli.pct.py          # Click CLI entry point
+│   │   └── 10_cli.pct.py          # Typer CLI entry point
 │   └── tests/                     # Test notebooks
-│       ├── test_config.pct.py     # Unit tests
-│       ├── test_ports.pct.py
-│       ├── test_routing.pct.py
+│       ├── test_apps.pct.py       # Unit tests
 │       ├── test_auto_docker.pct.py
+│       ├── test_config.pct.py
+│       ├── test_deploy.pct.py
+│       ├── test_environments.pct.py
+│       ├── test_ports.pct.py
+│       ├── test_remote.pct.py
+│       ├── test_routing.pct.py
+│       ├── test_server.pct.py
+│       ├── test_tunnel.pct.py
+│       ├── test_validate.pct.py
 │       └── integration/           # Integration tests (require .env + hcloud)
 │           ├── conftest.pct.py    # Server provisioning fixtures
-│           ├── test_server_init.pct.py
-│           ├── test_deploy_static.pct.py
-│           ├── test_deploy_docker.pct.py
-│           └── ...
+│           └── test_server_init.pct.py
 ├── src/                           # AUTO-GENERATED (do not edit)
 │   ├── appgarden/
 │   │   ├── __init__.py
@@ -65,6 +69,8 @@ appgarden/
 │   │       ├── Caddyfile.subdirectory.j2
 │   │       └── Caddyfile.static.j2
 │   └── tests/
+├── test_app/                      # Sample project with appgarden.toml
+├── SKILL.md                       # Agent skill guide for using appgarden
 └── README.md
 ```
 
@@ -112,7 +118,7 @@ Integration tests require a `.env` file in the repo root (see `.env.sample`). Th
 
 ## Key Dependencies
 
-- `click` — CLI framework
+- `typer` — CLI framework
 - `pyinfra` — Remote server operations over SSH
 - `jinja2` — Template rendering for Caddy/systemd/Docker configs
 - `rich` — Terminal output (tables, progress bars, colors)
