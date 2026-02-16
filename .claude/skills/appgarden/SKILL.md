@@ -1,3 +1,12 @@
+---
+name: appgarden
+description: >
+  Deploy and manage web applications on remote servers with AppGarden.
+  Use when the user asks about deploying apps, managing servers, configuring
+  appgarden.toml, or troubleshooting deployed applications.
+user-invocable: false
+---
+
 # AppGarden — Agent Skill Guide
 
 Use this guide when deploying web applications to remote servers with `appgarden`.
@@ -84,6 +93,7 @@ All fields from `[app]` are inherited by every environment unless overridden. Th
 | `domain` | Override base domain |
 | `port` | Host port (auto-allocated if omitted) |
 | `env` | Inline env vars: `{ KEY = "value" }` |
+| `meta` | Arbitrary metadata: `{ team = "backend", visibility = "internal" }` |
 
 **`[environments.<name>]` sections** — same fields as `[app]` plus:
 
@@ -92,6 +102,8 @@ All fields from `[app]` are inherited by every environment unless overridden. Th
 | `server` | Which configured server to deploy to |
 | `branch` | Git branch (for git sources) |
 | `env_file` | Path to .env file |
+
+Both `env` and `meta` are merged across levels (environment overrides app defaults per-key).
 
 ## Deploying without `appgarden.toml`
 
@@ -115,6 +127,10 @@ appgarden deploy myapp --method dockerfile --source . --port 8080 --container-po
 
 # Docker Compose
 appgarden deploy mystack --method docker-compose --source ./project/ --subdomain mystack
+
+# With metadata
+appgarden deploy myapp --method dockerfile --source . --subdomain myapp \
+  --meta team=backend --meta visibility=internal
 ```
 
 ## Deployment methods
@@ -131,7 +147,7 @@ appgarden deploy mystack --method docker-compose --source ./project/ --subdomain
 
 ```bash
 appgarden apps list                      # List all apps on the default server
-appgarden apps status myapp              # Detailed status (URL, method, port, uptime)
+appgarden apps status myapp              # Detailed status (URL, method, port, metadata)
 appgarden apps logs myapp -n 100         # View logs
 appgarden apps restart myapp             # Restart
 appgarden apps redeploy myapp            # Pull latest source, rebuild, restart
@@ -142,6 +158,36 @@ appgarden apps remove myapp --keep-data  # Remove but preserve data/ directory
 ```
 
 Use `--server <name>` on any command to target a specific server.
+
+## App metadata
+
+Attach arbitrary key-value metadata to apps:
+
+```bash
+# View metadata
+appgarden apps meta get myapp
+
+# Set/update individual keys
+appgarden apps meta set myapp --meta team=backend --meta tier=premium
+
+# Replace all metadata with a JSON object
+appgarden apps meta replace myapp --json '{"team": "frontend"}'
+
+# Remove specific keys
+appgarden apps meta remove myapp tier visibility
+```
+
+In `appgarden.toml`, metadata merges like env vars (environment overrides app defaults per-key):
+
+```toml
+[app]
+name = "myapp"
+meta = { team = "backend", visibility = "internal" }
+
+[environments.production]
+meta = { visibility = "public" }
+# result: { team = "backend", visibility = "public" }
+```
 
 ## Environment variables
 
