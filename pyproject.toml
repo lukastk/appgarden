@@ -1,6 +1,6 @@
 [project]
 name = "appgarden"
-version = "0.1.2"
+version = "0.1.3"
 description = "Deploy web applications to remote servers."
 readme = "README.md"
 requires-python = ">=3.11"
