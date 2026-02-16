@@ -382,12 +382,19 @@ def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: 
         raise RuntimeError("'rsync' is not installed. Install it to deploy local source directories.")
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip()
-        if "permission denied" in stderr.lower() or e.returncode == 255:
+        if e.returncode == 255:
             raise RuntimeError(
-                f"SSH authentication failed during rsync. "
+                f"SSH connection failed during rsync. "
                 f"If your key is encrypted, ensure ssh-agent is running and your key is loaded:\n"
                 f"  eval $(ssh-agent) && ssh-add {shlex.quote(ssh_key)}\n"
                 f"rsync stderr: {stderr}"
+            )
+        if e.returncode == 23 and "permission denied" in stderr.lower():
+            raise RuntimeError(
+                f"Permission denied writing to {remote_path} on the server. "
+                f"The directory may be owned by root. Fix with:\n"
+                f"  appgarden server init --include group\n"
+                f"or manually: ssh {server.ssh_user}@{host_addr} sudo chown -R {server.ssh_user} {remote_path}"
             )
         raise RuntimeError(f"rsync failed (exit {e.returncode}): {stderr}")
 
