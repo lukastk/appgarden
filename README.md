@@ -211,6 +211,52 @@ appgarden deploy myapp --method dockerfile \
 
 Environment files are stored on the server with `600` permissions (readable only by root).
 
+## App Metadata
+
+Attach arbitrary key-value metadata to apps for organization and tracking:
+
+```bash
+# Set metadata during deploy
+appgarden deploy myapp --method dockerfile \
+  --source . \
+  --url myapp.apps.example.com \
+  --meta team=backend \
+  --meta visibility=internal
+
+# View metadata
+appgarden apps meta get myapp
+
+# Update individual keys
+appgarden apps meta set myapp --meta tier=premium --meta visibility=public
+
+# Replace all metadata
+appgarden apps meta replace myapp --json '{"team": "frontend", "tier": "free"}'
+
+# Remove specific keys
+appgarden apps meta remove myapp tier visibility
+```
+
+Metadata is also shown in `appgarden apps status`.
+
+### Metadata in appgarden.toml
+
+Set metadata at the app level (inherited by all environments) and override per environment:
+
+```toml
+[app]
+name = "mywebsite"
+method = "dockerfile"
+meta = { team = "backend", visibility = "internal" }
+
+[environments.production]
+url = "mywebsite.apps.example.com"
+meta = { visibility = "public" }  # overrides app default
+
+[environments.staging]
+url = "mywebsite-staging.apps.example.com"
+# inherits meta = { team = "backend", visibility = "internal" }
+```
+
 ## Environments (appgarden.toml)
 
 For projects with multiple deployment targets, create an `appgarden.toml` in your project root:
@@ -338,6 +384,15 @@ appgarden apps restart <name>
 appgarden apps logs <name> [-n 50]
 appgarden apps remove <name> [--keep-data] [--yes]
 appgarden apps redeploy <name>
+```
+
+### App Metadata
+
+```bash
+appgarden apps meta get <name> [-s server]
+appgarden apps meta set <name> --meta KEY=VALUE [--meta ...] [-s server]
+appgarden apps meta replace <name> --json '{"key": "value"}' [-s server]
+appgarden apps meta remove <name> KEY [KEY ...] [-s server]
 ```
 
 ### Tunnels
