@@ -161,10 +161,19 @@ def resolve_host(server: ServerConfig) -> str:
     if not server.hcloud_name or not server.hcloud_context:
         raise ValueError("Server must have either 'host' or both 'hcloud_name' and 'hcloud_context'")
 
-    result = subprocess.run(
-        ["hcloud", "--context", server.hcloud_context, "server", "ip", server.hcloud_name],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["hcloud", "--context", server.hcloud_context, "server", "ip", server.hcloud_name],
+            capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        raise ValueError("'hcloud' CLI not found. Install it from https://github.com/hetznercloud/cli")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip()
+        raise ValueError(
+            f"Failed to resolve IP for hcloud server '{server.hcloud_name}' "
+            f"(context '{server.hcloud_context}'): {stderr or 'unknown error'}"
+        )
     return result.stdout.strip()
 
 # %% [markdown]
