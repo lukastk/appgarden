@@ -125,6 +125,7 @@ def deploy_auto(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Auto-detect runtime, generate Dockerfile, build and deploy."""
     ctx = make_remote_context(server)
@@ -221,12 +222,15 @@ def deploy_auto(
         )
 
         # Register
+        extra = {"auto_detected_runtime": runtime.name}
+        if meta:
+            extra["meta"] = meta
         _register_app(
             host, garden_state, name, "auto", url,
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra={"auto_detected_runtime": runtime.name}, ctx=ctx,
+            extra=extra, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

@@ -528,3 +528,102 @@ subdomain = "prod"
     (tmp_path / "appgarden.toml").write_text(toml)
     cfg = load_project_config(tmp_path)
     assert "slug" not in cfg.app_defaults
+
+# %% [markdown]
+# ## Metadata merging
+
+# %%
+#|export
+def test_resolve_meta_from_app_defaults(tmp_path):
+    """App-level meta is inherited by environments."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+meta = { team = "backend", visibility = "internal" }
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.meta == {"team": "backend", "visibility": "internal"}
+
+# %%
+#|export
+def test_resolve_meta_env_overrides_app(tmp_path):
+    """Environment meta overrides app-level meta keys."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+meta = { team = "backend", visibility = "internal" }
+
+[environments.production]
+url = "myapp.example.com"
+meta = { visibility = "public" }
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.meta == {"team": "backend", "visibility": "public"}
+
+# %%
+#|export
+def test_resolve_meta_env_adds_keys(tmp_path):
+    """Environment can add new meta keys beyond app defaults."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+meta = { team = "backend" }
+
+[environments.production]
+url = "myapp.example.com"
+meta = { tier = "premium" }
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.meta == {"team": "backend", "tier": "premium"}
+
+# %%
+#|export
+def test_resolve_meta_empty_default(tmp_path):
+    """Environments without meta get empty dict."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.meta == {}
+
+# %%
+#|export
+def test_env_config_to_dict_includes_meta():
+    """_env_config_to_dict includes non-empty meta."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+        meta={"team": "backend"},
+    )
+    d = _env_config_to_dict(env)
+    assert d["meta"] == {"team": "backend"}
+
+# %%
+#|export
+def test_env_config_to_dict_excludes_empty_meta():
+    """_env_config_to_dict excludes empty meta."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+    )
+    d = _env_config_to_dict(env)
+    assert "meta" not in d

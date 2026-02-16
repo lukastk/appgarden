@@ -120,6 +120,7 @@ def deploy_static(
     source: str,
     url: str,
     branch: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Deploy a static site to the remote server.
 
@@ -149,7 +150,8 @@ def deploy_static(
         # 3. Register
         _register_app(
             host, garden_state, name, "static", url,
-            source=source, source_type=source_type, branch=branch, ctx=ctx,
+            source=source, source_type=source_type, branch=branch,
+            extra={"meta": meta} if meta else None, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -280,6 +282,7 @@ def deploy_command(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Deploy a bare-process app managed by systemd."""
     ctx = make_remote_context(server)
@@ -333,7 +336,8 @@ def deploy_command(
         _register_app(
             host, garden_state, name, "command", url,
             source=source, source_type=source_type,
-            port=port, branch=branch, systemd_unit=unit_name, ctx=ctx,
+            port=port, branch=branch, systemd_unit=unit_name,
+            extra={"meta": meta} if meta else None, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -354,6 +358,7 @@ def deploy_docker_compose(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Deploy a docker-compose app."""
     ctx = make_remote_context(server)
@@ -417,7 +422,8 @@ def deploy_docker_compose(
         _register_app(
             host, garden_state, name, "docker-compose", url,
             source=source, source_type=source_type,
-            port=port, branch=branch, systemd_unit=unit_name, ctx=ctx,
+            port=port, branch=branch, systemd_unit=unit_name,
+            extra={"meta": meta} if meta else None, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -440,6 +446,7 @@ def deploy_dockerfile(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Deploy an app from a Dockerfile."""
     ctx = make_remote_context(server)
@@ -512,7 +519,8 @@ def deploy_dockerfile(
             host, garden_state, name, "dockerfile", url,
             source=source, source_type=source_type,
             port=port, container_port=container_port,
-            branch=branch, systemd_unit=unit_name, ctx=ctx,
+            branch=branch, systemd_unit=unit_name,
+            extra={"meta": meta} if meta else None, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

@@ -28,6 +28,7 @@ class EnvironmentConfig:
     domain: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     env_file: str | None = None
+    meta: dict = field(default_factory=dict)
 
 # %% pts/appgarden/08_environments.pct.py 6
 @dataclass
@@ -108,9 +109,14 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
     env_env = env_data.get("env", {})
     merged_env = {**app_env, **env_env}
 
+    # For meta, merge dicts (env-level overrides app-level)
+    app_meta = merged.pop("meta", {})
+    env_meta = env_data.get("meta", {})
+    merged_meta = {**app_meta, **env_meta}
+
     # Overlay all other env-specific keys
     for k, v in env_data.items():
-        if k != "env":
+        if k not in ("env", "meta"):
             merged[k] = v
 
     app_name = derive_app_name(config.app_name, env_name)
@@ -149,6 +155,7 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         domain=merged.get("domain"),
         env=merged_env,
         env_file=merged.get("env_file"),
+        meta=merged_meta,
     )
 
 # %% pts/appgarden/08_environments.pct.py 14

@@ -32,6 +32,7 @@ from appgarden.apps import (
     list_apps, list_apps_with_status, app_status,
     stop_app, start_app, restart_app,
     remove_app, redeploy_app, app_logs,
+    get_app_metadata, set_app_metadata, update_app_metadata, remove_app_metadata_keys,
 )
 from appgarden.remote import (
     ssh_connect, make_remote_context,
@@ -341,6 +342,20 @@ def _parse_env_list(env: list[str] | None) -> dict[str, str] | None:
 
 # %%
 #|export
+def _parse_meta_list(meta: list[str] | None) -> dict | None:
+    """Parse a list of KEY=VALUE strings into a dict (no key validation)."""
+    if not meta:
+        return None
+    result = {}
+    for item in meta:
+        if "=" not in item:
+            raise typer.BadParameter(f"Invalid meta format: '{item}' (expected KEY=VALUE)")
+        k, v = item.split("=", 1)
+        result[k] = v
+    return result
+
+# %%
+#|export
 DEPLOY_DEFAULTS = {"method": "static", "container_port": 3000}
 
 def _resolve_deploy_params(
@@ -364,27 +379,28 @@ def _dispatch_deploy(
     container_port: int = 3000, cmd: str | None = None,
     setup_cmd: str | None = None, branch: str | None = None,
     env_vars: dict[str, str] | None = None, env_file: str | None = None,
+    meta: dict | None = None,
 ) -> None:
     """Dispatch to the appropriate deploy function based on method."""
     if method == "static":
         if not source:
             console.print("[red]Error:[/red] --source is required for static deployments")
             raise typer.Exit(code=1)
-        deploy_static(srv, name, source, url, branch=branch)
+        deploy_static(srv, name, source, url, branch=branch, meta=meta)
 
     elif method == "command":
         if not cmd:
             console.print("[red]Error:[/red] --cmd is required for command deployments")
             raise typer.Exit(code=1)
         deploy_command(srv, name, cmd, url, port=port, source=source,
-                       branch=branch, env_vars=env_vars, env_file=env_file)
+                       branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
 
     elif method == "docker-compose":
         if not source:
             console.print("[red]Error:[/red] --source is required for docker-compose deployments")
             raise typer.Exit(code=1)
         deploy_docker_compose(srv, name, source, url, port=port,
-                              branch=branch, env_vars=env_vars, env_file=env_file)
+                              branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
 
     elif method == "dockerfile":
         if not source:
@@ -392,7 +408,7 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_dockerfile(srv, name, source, url, port=port,
                           container_port=container_port, branch=branch,
-                          env_vars=env_vars, env_file=env_file)
+                          env_vars=env_vars, env_file=env_file, meta=meta)
 
     elif method == "auto":
         if not source:
@@ -403,7 +419,7 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_auto(srv, name, source, cmd, url, port=port,
                     container_port=container_port, setup_cmd=setup_cmd,
-                    branch=branch, env_vars=env_vars, env_file=env_file)
+                    branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
 
     else:
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
@@ -422,6 +438,8 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
             d[key] = val
     if env_cfg.env:
         d["env"] = dict(env_cfg.env)
+    if env_cfg.meta:
+        d["meta"] = dict(env_cfg.meta)
     return d
 
 def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> None:
@@ -472,6 +490,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         cmd=params.get("cmd"), setup_cmd=params.get("setup_cmd"),
         branch=params.get("branch"),
         env_vars=params.get("env"), env_file=params.get("env_file"),
+        meta=params.get("meta"),
     )
 
 # %%
@@ -493,6 +512,7 @@ def deploy(
     branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
     env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
     env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
+    meta: Optional[list[str]] = typer.Option(None, "--meta", help="Metadata (KEY=VALUE, repeatable)"),
     all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
     project_path: Optional[str] = typer.Option(None, "--project", "-P", help="Path to appgarden.toml or directory containing it"),
 ):
@@ -515,6 +535,9 @@ def deploy(
     env_vars = _parse_env_list(env)
     if env_vars:
         cli_flags["env"] = env_vars
+    meta_dict = _parse_meta_list(meta)
+    if meta_dict:
+        cli_flags["meta"] = meta_dict
 
     global_defaults = cfg.defaults or None
 
@@ -674,6 +697,9 @@ def apps_status(
         table.add_row("Created", status.created_at)
     if status.updated_at:
         table.add_row("Updated", status.updated_at)
+    if status.meta:
+        import json as _json
+        table.add_row("Metadata", _json.dumps(status.meta, indent=2))
 
     console.print(table)
 
@@ -832,6 +858,144 @@ def apps_redeploy(
             raise typer.Exit(code=1)
 
     console.print(f"App [bold]{name}[/bold] redeployed.")
+
+# %% [markdown]
+# ## Apps meta subcommand group
+
+# %%
+#|export
+meta_app = typer.Typer(
+    name="meta",
+    help="Manage app metadata.",
+    no_args_is_help=True,
+)
+apps_app.add_typer(meta_app, name="meta")
+
+# %%
+#|export
+@meta_app.command("get")
+def meta_get(
+    name: str = typer.Argument(help="App name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Show metadata for an app."""
+    validate_app_name(name)
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    ctx = make_remote_context(srv)
+    with ssh_connect(srv) as host:
+        try:
+            meta = get_app_metadata(host, name, ctx=ctx)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    if not meta:
+        console.print("No metadata set.")
+    else:
+        import json as _json
+        console.print(_json.dumps(meta, indent=2))
+
+# %%
+#|export
+@meta_app.command("set")
+def meta_set(
+    name: str = typer.Argument(help="App name"),
+    meta: list[str] = typer.Option(..., "--meta", help="Metadata (KEY=VALUE, repeatable)"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Set or update metadata keys for an app."""
+    validate_app_name(name)
+    updates = _parse_meta_list(meta)
+    if not updates:
+        console.print("[red]Error:[/red] At least one --meta KEY=VALUE is required")
+        raise typer.Exit(code=1)
+
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    ctx = make_remote_context(srv)
+    with ssh_connect(srv) as host:
+        try:
+            update_app_metadata(host, name, updates, ctx=ctx)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    console.print(f"Metadata updated for [bold]{name}[/bold].")
+
+# %%
+#|export
+@meta_app.command("replace")
+def meta_replace(
+    name: str = typer.Argument(help="App name"),
+    json_str: str = typer.Option(..., "--json", help="JSON object to replace entire metadata"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Replace all metadata for an app with a JSON object."""
+    validate_app_name(name)
+    import json as _json
+    try:
+        new_meta = _json.loads(json_str)
+    except _json.JSONDecodeError as e:
+        console.print(f"[red]Error:[/red] Invalid JSON: {e}")
+        raise typer.Exit(code=1)
+    if not isinstance(new_meta, dict):
+        console.print("[red]Error:[/red] --json must be a JSON object")
+        raise typer.Exit(code=1)
+
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    ctx = make_remote_context(srv)
+    with ssh_connect(srv) as host:
+        try:
+            set_app_metadata(host, name, new_meta, ctx=ctx)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    console.print(f"Metadata replaced for [bold]{name}[/bold].")
+
+# %%
+#|export
+@meta_app.command("remove")
+def meta_remove(
+    name: str = typer.Argument(help="App name"),
+    keys: list[str] = typer.Argument(help="Metadata keys to remove"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+):
+    """Remove specific metadata keys from an app."""
+    validate_app_name(name)
+    cfg = load_config()
+    try:
+        sname, srv = get_server(cfg, server)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    ctx = make_remote_context(srv)
+    with ssh_connect(srv) as host:
+        try:
+            remove_app_metadata_keys(host, name, keys, ctx=ctx)
+        except ValueError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    console.print(f"Metadata keys removed from [bold]{name}[/bold].")
 
 # %% [markdown]
 # ## Tunnel subcommand group

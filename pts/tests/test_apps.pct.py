@@ -28,6 +28,7 @@ from appgarden.apps import (
     list_apps, list_apps_with_status, app_status,
     stop_app, start_app, restart_app,
     remove_app, redeploy_app,
+    get_app_metadata, set_app_metadata, update_app_metadata, remove_app_metadata_keys,
     AppInfo, AppStatus,
 )
 
@@ -263,3 +264,133 @@ def test_remove_app_not_found():
     host = _mock_host()
     with pytest.raises(ValueError, match="not found"):
         remove_app(host, "nonexistent")
+
+# %% [markdown]
+# ## App metadata CRUD
+
+# %%
+#|export
+def test_get_app_metadata_empty():
+    """get_app_metadata returns empty dict when no meta is set."""
+    host = _mock_host()
+    meta = get_app_metadata(host, "myapp")
+    assert meta == {}
+
+# %%
+#|export
+def test_get_app_metadata_existing():
+    """get_app_metadata returns existing meta dict."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["myapp"]["meta"] = {"team": "backend", "visibility": "internal"}
+    host = _mock_host(garden_state=state)
+    meta = get_app_metadata(host, "myapp")
+    assert meta == {"team": "backend", "visibility": "internal"}
+
+# %%
+#|export
+def test_get_app_metadata_not_found():
+    """get_app_metadata raises ValueError for unknown app."""
+    import pytest
+    host = _mock_host()
+    with pytest.raises(ValueError, match="not found"):
+        get_app_metadata(host, "nonexistent")
+
+# %%
+#|export
+def test_set_app_metadata():
+    """set_app_metadata replaces the entire meta dict."""
+    host = _mock_host()
+    set_app_metadata(host, "myapp", {"team": "frontend"})
+    # Verify the written garden.json
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    assert len(garden_writes) >= 1
+    last_garden = json.loads(garden_writes[-1])
+    assert last_garden["apps"]["myapp"]["meta"] == {"team": "frontend"}
+
+# %%
+#|export
+def test_update_app_metadata_merges():
+    """update_app_metadata merges into existing meta."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["myapp"]["meta"] = {"team": "backend"}
+    host = _mock_host(garden_state=state)
+    update_app_metadata(host, "myapp", {"visibility": "public"})
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    last_garden = json.loads(garden_writes[-1])
+    assert last_garden["apps"]["myapp"]["meta"] == {"team": "backend", "visibility": "public"}
+
+# %%
+#|export
+def test_update_app_metadata_overwrites_key():
+    """update_app_metadata overwrites existing keys."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["myapp"]["meta"] = {"team": "backend"}
+    host = _mock_host(garden_state=state)
+    update_app_metadata(host, "myapp", {"team": "frontend"})
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    last_garden = json.loads(garden_writes[-1])
+    assert last_garden["apps"]["myapp"]["meta"]["team"] == "frontend"
+
+# %%
+#|export
+def test_remove_app_metadata_keys_deletes():
+    """remove_app_metadata_keys removes specified keys."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["myapp"]["meta"] = {"team": "backend", "visibility": "internal", "tier": "free"}
+    host = _mock_host(garden_state=state)
+    remove_app_metadata_keys(host, "myapp", ["visibility", "tier"])
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    last_garden = json.loads(garden_writes[-1])
+    assert last_garden["apps"]["myapp"]["meta"] == {"team": "backend"}
+
+# %%
+#|export
+def test_remove_app_metadata_keys_missing_key_is_noop():
+    """remove_app_metadata_keys ignores keys that don't exist."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["myapp"]["meta"] = {"team": "backend"}
+    host = _mock_host(garden_state=state)
+    remove_app_metadata_keys(host, "myapp", ["nonexistent"])
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    last_garden = json.loads(garden_writes[-1])
+    assert last_garden["apps"]["myapp"]["meta"] == {"team": "backend"}
+
+# %%
+#|export
+def test_app_status_includes_meta():
+    """app_status includes meta field when present."""
+    state = json.loads(json.dumps(SAMPLE_GARDEN))
+    state["apps"]["docs"]["meta"] = {"team": "docs"}
+    host = _mock_host(garden_state=state)
+    status = app_status(host, "docs")
+    assert status.meta == {"team": "docs"}

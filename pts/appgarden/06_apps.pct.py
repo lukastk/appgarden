@@ -104,6 +104,7 @@ class AppStatus:
     source_type: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    meta: dict | None = None
 
 # %%
 #|export
@@ -137,7 +138,55 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
         source_type=entry.get("source_type"),
         created_at=entry.get("created_at"),
         updated_at=entry.get("updated_at"),
+        meta=entry.get("meta"),
     )
+
+# %% [markdown]
+# ## App metadata
+
+# %%
+#|export
+def get_app_metadata(host, name: str, ctx: RemoteContext | None = None) -> dict:
+    """Read the ``meta`` dict from garden.json for an app."""
+    state = read_garden_state(host, ctx=ctx)
+    if name not in state.get("apps", {}):
+        raise ValueError(f"App '{name}' not found")
+    return state["apps"][name].get("meta", {})
+
+# %%
+#|export
+def set_app_metadata(host, name: str, meta: dict, ctx: RemoteContext | None = None) -> None:
+    """Replace the entire ``meta`` dict for an app."""
+    state = read_garden_state(host, ctx=ctx)
+    if name not in state.get("apps", {}):
+        raise ValueError(f"App '{name}' not found")
+    state["apps"][name]["meta"] = meta
+    write_garden_state(host, state, ctx=ctx)
+
+# %%
+#|export
+def update_app_metadata(host, name: str, updates: dict, ctx: RemoteContext | None = None) -> None:
+    """Merge *updates* into the existing ``meta`` dict for an app."""
+    state = read_garden_state(host, ctx=ctx)
+    if name not in state.get("apps", {}):
+        raise ValueError(f"App '{name}' not found")
+    existing = state["apps"][name].get("meta", {})
+    existing.update(updates)
+    state["apps"][name]["meta"] = existing
+    write_garden_state(host, state, ctx=ctx)
+
+# %%
+#|export
+def remove_app_metadata_keys(host, name: str, keys: list[str], ctx: RemoteContext | None = None) -> None:
+    """Delete specific keys from the ``meta`` dict for an app."""
+    state = read_garden_state(host, ctx=ctx)
+    if name not in state.get("apps", {}):
+        raise ValueError(f"App '{name}' not found")
+    existing = state["apps"][name].get("meta", {})
+    for k in keys:
+        existing.pop(k, None)
+    state["apps"][name]["meta"] = existing
+    write_garden_state(host, state, ctx=ctx)
 
 # %% [markdown]
 # ## start / stop / restart

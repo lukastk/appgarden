@@ -418,3 +418,67 @@ def test_deploy_dockerfile_builds_and_creates_compose():
     garden = json.loads(written[garden_files[0]])
     assert garden["apps"]["webapp"]["method"] == "dockerfile"
     assert garden["apps"]["webapp"]["container_port"] == 8080
+
+# %% [markdown]
+# ## Metadata flows through deploy
+
+# %%
+#|export
+def test_deploy_static_with_meta():
+    """deploy_static passes meta through to garden.json via _register_app."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(
+            _make_server(), "mysite", "/tmp/site",
+            "mysite.apps.example.com",
+            meta={"team": "frontend", "tier": "free"},
+        )
+
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["mysite"]["meta"] == {"team": "frontend", "tier": "free"}
+
+# %%
+#|export
+def test_deploy_static_without_meta():
+    """deploy_static without meta does not add a meta key."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(_make_server(), "mysite", "/tmp/site", "mysite.apps.example.com")
+
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert "meta" not in garden["apps"]["mysite"]
+
+# %%
+#|export
+def test_deploy_command_with_meta():
+    """deploy_command passes meta through to garden.json."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_command(
+            _make_server(), "myapp", "python app.py",
+            "myapp.apps.example.com",
+            meta={"visibility": "internal"},
+        )
+
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["myapp"]["meta"] == {"visibility": "internal"}
