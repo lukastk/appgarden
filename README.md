@@ -236,26 +236,7 @@ appgarden apps meta replace myapp --json '{"team": "frontend", "tier": "free"}'
 appgarden apps meta remove myapp tier visibility
 ```
 
-Metadata is also shown in `appgarden apps status`.
-
-### Metadata in appgarden.toml
-
-Set metadata at the app level (inherited by all environments) and override per environment:
-
-```toml
-[app]
-name = "mywebsite"
-method = "dockerfile"
-meta = { team = "backend", visibility = "internal" }
-
-[environments.production]
-url = "mywebsite.apps.example.com"
-meta = { visibility = "public" }  # overrides app default
-
-[environments.staging]
-url = "mywebsite-staging.apps.example.com"
-# inherits meta = { team = "backend", visibility = "internal" }
-```
+Metadata is also shown in `appgarden apps status`. Metadata can also be set in `appgarden.toml` — see the [reference below](#appgardentoml-reference).
 
 ## Environments (appgarden.toml)
 
@@ -295,6 +276,54 @@ appgarden deploy --all-envs
 ```
 
 App names are derived automatically: `mywebsite` for production, `mywebsite-staging` for staging.
+
+### appgarden.toml Reference
+
+All fields can be set at the `[app]` level (inherited by all environments) and overridden per `[environments.<name>]`. The cascade order is: hardcoded defaults < global config < `[app]` defaults < environment overrides < CLI flags.
+
+```toml
+[app]
+name = "mywebsite"          # Required. Base app name.
+slug = "my-website"         # Optional. Used in {app.slug} placeholders (falls back to name).
+server = "myserver"         # Server name from appgarden config.
+method = "dockerfile"       # Deployment method: static, command, dockerfile, docker-compose, auto.
+source = "."                # Local path or git URL.
+url = "myapp.example.com"   # Full URL for the app.
+subdomain = "{app.slug}"    # Subdomain (combined with domain). Supports placeholders.
+path = "api"                # Path prefix (combined with domain). Alternative to subdomain.
+domain = "example.com"      # Base domain (overrides server domain for subdomain/path).
+port = 10000                # Host port (auto-allocated if omitted).
+container_port = 3000       # Container port (for dockerfile/auto methods). Default: 3000.
+cmd = "npm start"           # Start command (for command/auto methods).
+setup_cmd = "npm ci"        # Setup/install command (for auto method).
+branch = "main"             # Git branch (for git sources).
+env_file = ".env.production"  # Path to .env file (relative to project directory).
+gitignore = true            # Filter uploads using .gitignore (default: true).
+
+# Dict fields — merged (env-level overrides app-level keys):
+env = { NODE_ENV = "production", LOG_LEVEL = "info" }
+meta = { team = "backend", visibility = "internal" }
+
+# List fields — concatenated and deduplicated across layers:
+exclude = ["node_modules", ".git"]
+volumes = ["./data:/app/data", "/var/logs:/app/logs:ro"]
+
+[environments.production]
+url = "mywebsite.apps.example.com"
+branch = "main"
+env = { NODE_ENV = "production" }         # merged with [app] env
+meta = { visibility = "public" }          # merged with [app] meta
+volumes = ["/var/certs:/app/certs:ro"]    # concatenated with [app] volumes
+
+[environments.staging]
+url = "mywebsite-staging.apps.example.com"
+branch = "staging"
+env = { NODE_ENV = "staging" }
+```
+
+**Placeholders:** String values support `{app.name}`, `{app.slug}`, and `{env.name}` placeholders, interpolated per environment.
+
+**Volumes:** Only apply to `dockerfile` and `auto` methods (template-generated compose). The `docker-compose` method uses your own compose file.
 
 ## Subdirectory Routing
 
