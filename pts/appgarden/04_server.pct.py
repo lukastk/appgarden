@@ -22,6 +22,7 @@ from nblite import nbl_export; nbl_export();
 #|export
 import json
 import shlex
+from pathlib import Path
 
 from rich.console import Console
 
@@ -29,11 +30,14 @@ from appgarden.config import ServerConfig, resolve_host
 from appgarden.ports import empty_ports_state
 from appgarden.remote import (
     APPGARDEN_ROOT, GARDEN_STATE_PATH, PORTS_PATH,
+    PRIVILEGED_HELPER_PATH,
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
     run_sudo_command, write_system_file,
     garden_state_path, ports_path,
 )
+
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 console = Console()
 
@@ -222,20 +226,32 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         if "group" not in skip:
             _run(host,
                  f"groupadd -f appgarden && "
-                 f"usermod -aG appgarden {server.ssh_user} && "
                  f"chgrp -R appgarden {app_root} && "
                  f"chmod -R g+rwX {app_root} && "
                  f"find {app_root} -type d -exec chmod g+s {{}} +",
                  "Creating appgarden group", ctx=ctx)
 
-        # 11. Chown app root for non-root users (essential)
-        if ctx.needs_sudo:
-            group = "appgarden" if "group" not in skip else server.ssh_user
-            _run(host, f"chown -R {server.ssh_user}:{group} {app_root}",
+        # 10b. Install privileged wrapper and sudoers entry (essential)
+        wrapper_src = TEMPLATES_DIR / "appgarden-privileged"
+        wrapper_content = wrapper_src.read_text()
+        write_system_file(host, PRIVILEGED_HELPER_PATH, wrapper_content, ctx=ctx)
+        _run(host, f"chmod 755 {PRIVILEGED_HELPER_PATH} && chown root:root {PRIVILEGED_HELPER_PATH}",
+             "Installing privileged wrapper", ctx=ctx)
+        sudoers_line = f"%appgarden ALL=(ALL) NOPASSWD: {PRIVILEGED_HELPER_PATH}\n"
+        write_system_file(host, "/etc/sudoers.d/appgarden", sudoers_line, ctx=ctx)
+        _run(host, "chmod 440 /etc/sudoers.d/appgarden",
+             "Configuring sudoers for appgarden", ctx=ctx)
+
+        # 11. Set app root ownership for deploy users (essential)
+        if "group" not in skip:
+            _run(host, f"chown -R root:appgarden {app_root}",
                  "Setting app root ownership", ctx=ctx)
-            if "docker" not in skip:
-                _run(host, f"usermod -aG docker {server.ssh_user}",
-                     "Adding user to docker group", ctx=ctx)
+        elif ctx.needs_sudo:
+            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root}",
+                 "Setting app root ownership", ctx=ctx)
+        if ctx.needs_sudo and "docker" not in skip:
+            _run(host, f"usermod -aG docker {server.ssh_user}",
+                 "Adding user to docker group", ctx=ctx)
 
         # 11. Initialise state files (essential, but only if missing)
         try:

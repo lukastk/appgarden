@@ -257,10 +257,16 @@ def server_init_cmd(
       8. group    - Create appgarden user group
     \b
     Essential steps (always run):
-      9. caddyfile - Configure Caddyfile
-     10. dirs      - Create directory structure
-     11. state     - Initialise state files
-     12. services  - Start Docker & Caddy
+      9. caddyfile  - Configure Caddyfile
+     10. dirs       - Create directory structure
+     11. privileged - Install sudo wrapper + sudoers entry
+     12. ownership  - Set app root ownership for deploy users
+     13. state      - Initialise state files
+     14. services   - Start Docker & Caddy
+
+    For non-root SSH users, a privileged wrapper script is installed at
+    /usr/local/bin/appgarden-privileged with a matching sudoers entry,
+    restricting sudo access to only appgarden-scoped operations.
 
     Use --minimal to skip all optional steps.
     """

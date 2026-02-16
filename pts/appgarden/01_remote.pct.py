@@ -188,6 +188,111 @@ def write_system_file(host, path: str, content: str, ctx: RemoteContext | None =
         raise RuntimeError(f"Failed to write system file: {path}")
 
 # %% [markdown]
+# ## Privileged wrapper helpers
+#
+# For non-root users, privileged operations (systemctl, unit file management,
+# journalctl) are routed through the `appgarden-privileged` wrapper script
+# installed during `server init`.  Root users bypass the wrapper entirely.
+
+# %%
+#|export
+PRIVILEGED_HELPER_PATH = "/usr/local/bin/appgarden-privileged"
+
+# %%
+#|export
+def check_privileged_helper(host, ctx: RemoteContext | None = None) -> bool:
+    """Check if the privileged wrapper script is installed on the server.
+
+    Returns True if installed, False otherwise.
+    """
+    try:
+        run_remote_command(host, f"test -x {PRIVILEGED_HELPER_PATH}")
+        return True
+    except RuntimeError:
+        return False
+
+# %%
+#|export
+def _require_privileged_helper(host, ctx: RemoteContext | None = None) -> None:
+    """Raise if the privileged helper is needed but not installed."""
+    if ctx and ctx.needs_sudo and not check_privileged_helper(host, ctx):
+        raise RuntimeError(
+            f"Privileged wrapper not found at {PRIVILEGED_HELPER_PATH}. "
+            "Re-run 'appgarden server init' to install it."
+        )
+
+# %%
+#|export
+def privileged_systemctl(host, action: str, unit: str | None = None,
+                         ctx: RemoteContext | None = None) -> str:
+    """Run a systemctl action, routing through the privileged wrapper for non-root users.
+
+    For root users (or ctx=None), executes directly via run_sudo_command.
+    For non-root users, uses sudo appgarden-privileged systemctl <action> [unit].
+    """
+    if not ctx or not ctx.needs_sudo:
+        # Root: execute directly
+        if unit:
+            return run_sudo_command(host, f"systemctl {action} {shlex.quote(unit)}", ctx=ctx)
+        return run_sudo_command(host, f"systemctl {action}", ctx=ctx)
+
+    # Non-root: route through wrapper
+    _require_privileged_helper(host, ctx)
+    cmd = f"sudo {PRIVILEGED_HELPER_PATH} systemctl {action}"
+    if unit:
+        cmd += f" {shlex.quote(unit)}"
+    return run_remote_command(host, cmd)
+
+# %%
+#|export
+def privileged_install_unit(host, name: str, content: str,
+                            ctx: RemoteContext | None = None) -> None:
+    """Install a systemd unit file, routing through the wrapper for non-root users.
+
+    For root users, writes directly via write_system_file.
+    For non-root users, writes a temp file and calls the wrapper to copy it.
+    """
+    if not ctx or not ctx.needs_sudo:
+        unit_path = f"/etc/systemd/system/{name}"
+        write_system_file(host, unit_path, content, ctx=ctx)
+        return
+
+    # Non-root: write temp file, then call wrapper
+    _require_privileged_helper(host, ctx)
+    temp_path = f"/tmp/appgarden-unit-{name}.tmp"
+    write_remote_file(host, temp_path, content)
+    run_remote_command(host, f"sudo {PRIVILEGED_HELPER_PATH} install-unit {shlex.quote(name)} {shlex.quote(temp_path)}")
+
+# %%
+#|export
+def privileged_remove_unit(host, name: str,
+                           ctx: RemoteContext | None = None) -> None:
+    """Remove a systemd unit file, routing through the wrapper for non-root users."""
+    if not ctx or not ctx.needs_sudo:
+        run_sudo_command(host, f"rm -f /etc/systemd/system/{shlex.quote(name)}", ctx=ctx)
+        return
+
+    _require_privileged_helper(host, ctx)
+    run_remote_command(host, f"sudo {PRIVILEGED_HELPER_PATH} remove-unit {shlex.quote(name)}")
+
+# %%
+#|export
+def privileged_journalctl(host, unit: str, lines: int = 50,
+                          ctx: RemoteContext | None = None) -> str:
+    """Fetch journal logs for a unit, routing through the wrapper for non-root users."""
+    if not ctx or not ctx.needs_sudo:
+        return run_sudo_command(
+            host, f"journalctl -u {shlex.quote(unit)} --no-pager -n {int(lines)}",
+            ctx=ctx, timeout=30,
+        )
+
+    _require_privileged_helper(host, ctx)
+    return run_remote_command(
+        host, f"sudo {PRIVILEGED_HELPER_PATH} journalctl {shlex.quote(unit)} --lines {int(lines)}",
+        timeout=30,
+    )
+
+# %% [markdown]
 # ## SSH connection
 #
 # We use pyinfra's low-level host API (`host.connect`, `host.run_shell_command`,

@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""AppGarden privileged wrapper script.
+
+Installed at /usr/local/bin/appgarden-privileged during `appgarden server init`.
+Called via: sudo /usr/local/bin/appgarden-privileged <command> [args...]
+
+Restricts privileged operations to appgarden-scoped resources only.
+All inputs are validated; no shell interpretation is used.
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+UNIT_RE = re.compile(r'^appgarden-[a-zA-Z0-9][a-zA-Z0-9._-]*\.service$')
+SYSTEMD_DIR = "/etc/systemd/system"
+SYSTEMCTL_ACTIONS = {"daemon-reload", "enable", "disable", "start", "stop", "restart", "is-active"}
+TEMP_PREFIX = "/tmp/appgarden-unit-"
+
+
+def die(msg):
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def validate_unit(name):
+    """Validate a systemd unit name matches appgarden-*.service."""
+    if not UNIT_RE.match(name):
+        die(f"Invalid unit name: {name}")
+    if ".." in name:
+        die(f"Path traversal in unit name: {name}")
+    return name
+
+
+def cmd_systemctl(args):
+    """systemctl <action> [unit]"""
+    if not args:
+        die("systemctl: missing action")
+    action = args[0]
+
+    if action == "reload":
+        # Only caddy is allowed for reload
+        if len(args) != 2 or args[1] != "caddy":
+            die("systemctl reload: only 'caddy' is allowed")
+        subprocess.run(["systemctl", "reload", "caddy"], check=True)
+        return
+
+    if action not in SYSTEMCTL_ACTIONS:
+        die(f"systemctl: disallowed action '{action}'")
+
+    if action == "daemon-reload":
+        if len(args) != 1:
+            die("systemctl daemon-reload: no extra arguments allowed")
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        return
+
+    # All other actions require a unit name
+    if len(args) != 2:
+        die(f"systemctl {action}: expected exactly one unit name")
+    unit = validate_unit(args[1])
+    subprocess.run(["systemctl", action, unit], check=True)
+
+
+def cmd_install_unit(args):
+    """install-unit <name> <temp-file>"""
+    if len(args) != 2:
+        die("install-unit: expected <name> <temp-file>")
+    name = validate_unit(args[0])
+    temp_file = args[1]
+
+    # Validate temp file path (must be under /tmp/appgarden-unit-)
+    if not temp_file.startswith(TEMP_PREFIX):
+        die(f"install-unit: temp file must be under {TEMP_PREFIX}")
+    if ".." in temp_file:
+        die(f"install-unit: path traversal in temp file: {temp_file}")
+    if not os.path.isfile(temp_file):
+        die(f"install-unit: temp file does not exist: {temp_file}")
+
+    dest = os.path.join(SYSTEMD_DIR, name)
+    shutil.copy2(temp_file, dest)
+    os.chmod(dest, 0o644)
+    os.unlink(temp_file)
+
+
+def cmd_remove_unit(args):
+    """remove-unit <name>"""
+    if len(args) != 1:
+        die("remove-unit: expected exactly one unit name")
+    name = validate_unit(args[0])
+    dest = os.path.join(SYSTEMD_DIR, name)
+    if os.path.exists(dest):
+        os.unlink(dest)
+
+
+def cmd_journalctl(args):
+    """journalctl <unit> [--lines N]"""
+    if not args:
+        die("journalctl: missing unit name")
+    unit = validate_unit(args[0])
+    rest = args[1:]
+
+    cmd = ["journalctl", "-u", unit, "--no-pager"]
+    if len(rest) == 2 and rest[0] == "--lines":
+        try:
+            n = int(rest[1])
+            if n < 1 or n > 100000:
+                die("journalctl: --lines must be between 1 and 100000")
+            cmd.extend(["-n", str(n)])
+        except ValueError:
+            die(f"journalctl: invalid --lines value: {rest[1]}")
+    elif rest:
+        die(f"journalctl: unexpected arguments: {rest}")
+
+    subprocess.run(cmd, check=True)
+
+
+COMMANDS = {
+    "systemctl": cmd_systemctl,
+    "install-unit": cmd_install_unit,
+    "remove-unit": cmd_remove_unit,
+    "journalctl": cmd_journalctl,
+}
+
+
+def main():
+    if len(sys.argv) < 2:
+        die(f"Usage: {sys.argv[0]} <command> [args...]\n"
+            f"Commands: {', '.join(sorted(COMMANDS))}")
+
+    command = sys.argv[1]
+    if command not in COMMANDS:
+        die(f"Unknown command: {command}")
+
+    try:
+        COMMANDS[command](sys.argv[2:])
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
+
+
+if __name__ == "__main__":
+    main()

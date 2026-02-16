@@ -19,7 +19,7 @@ from .remote import (
     ssh_connect, run_remote_command, read_remote_file, write_remote_file,
     APPGARDEN_ROOT,
     RemoteContext, make_remote_context,
-    run_sudo_command, caddy_tunnels_dir, tunnels_state_path,
+    privileged_systemctl, caddy_tunnels_dir, tunnels_state_path,
 )
 from .ports import allocate_port, release_port
 from .routing import generate_caddy_config, CADDY_TUNNELS_DIR
@@ -69,7 +69,7 @@ def _deploy_tunnel_caddy(host, tunnel_id: str, domain: str, remote_port: int, ct
     )
     caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     write_remote_file(host, caddy_path, config)
-    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
+    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
 # %% pts/appgarden/09_tunnel.pct.py 14
 def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None) -> None:
@@ -77,7 +77,7 @@ def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None)
     caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     try:
         run_remote_command(host, f"rm -f {shlex.quote(caddy_path)}")
-        run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
+        privileged_systemctl(host, "reload", "caddy", ctx=ctx)
     except RuntimeError:
         pass
 

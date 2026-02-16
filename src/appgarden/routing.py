@@ -13,7 +13,7 @@ from .remote import (
     APPGARDEN_ROOT, RemoteContext,
     ssh_connect, read_remote_file, write_remote_file,
     run_remote_command, read_garden_state,
-    run_sudo_command, caddy_apps_dir, caddy_tunnels_dir,
+    privileged_systemctl, caddy_apps_dir, caddy_tunnels_dir,
     validate_domain, validate_url_path,
 )
 from .config import ServerConfig
@@ -171,7 +171,7 @@ def deploy_caddy_config(
         remote_path = _caddy_file_path(app_name, ctx)
 
     write_remote_file(host, remote_path, config)
-    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
+    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
 # %% pts/appgarden/03_routing.pct.py 15
 def remove_caddy_config(
@@ -206,7 +206,7 @@ def remove_caddy_config(
         remote_path = _caddy_file_path(app_name, ctx)
         run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
 
-    run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
+    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
 # %% pts/appgarden/03_routing.pct.py 17
 def render_template(template_name: str, **kwargs) -> str:

@@ -153,8 +153,8 @@ def test_init_server_nonroot_uses_sudo():
             continue  # state file existence check runs without sudo
         assert c.kwargs.get("_sudo") is True, f"Expected _sudo=True for: {cmd}"
 
-    # Should chown app root for non-root user
-    assert any("chown" in c and "deploy" in c for c in cmds), "Should chown app root"
+    # Should chown app root (root:appgarden when group step is enabled)
+    assert any("chown" in c and "appgarden" in c for c in cmds), "Should chown app root"
     # Should add user to docker group
     assert any("usermod" in c and "docker" in c for c in cmds), "Should add user to docker group"
 

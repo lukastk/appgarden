@@ -34,7 +34,7 @@ from appgarden.remote import (
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
     read_garden_state, write_garden_state, upload_directory,
-    run_sudo_command, write_system_file,
+    privileged_install_unit, privileged_systemctl,
     app_dir as _ctx_app_dir, source_dir as _ctx_source_dir,
     validate_branch, validate_env_key,
 )
@@ -202,11 +202,10 @@ def _systemd_unit_name(name: str) -> str:
 def _deploy_systemd_unit(host, name: str, unit_content: str, ctx: RemoteContext | None = None) -> str:
     """Write a systemd unit file, reload daemon, enable and start."""
     unit_name = _systemd_unit_name(name)
-    unit_path = f"{SYSTEMD_UNIT_DIR}/{unit_name}"
-    write_system_file(host, unit_path, unit_content, ctx=ctx)
-    run_sudo_command(host, "systemctl daemon-reload", ctx=ctx)
-    run_sudo_command(host, f"systemctl enable {shlex.quote(unit_name)}", ctx=ctx)
-    run_sudo_command(host, f"systemctl restart {shlex.quote(unit_name)}", ctx=ctx)
+    privileged_install_unit(host, unit_name, unit_content, ctx=ctx)
+    privileged_systemctl(host, "daemon-reload", ctx=ctx)
+    privileged_systemctl(host, "enable", unit_name, ctx=ctx)
+    privileged_systemctl(host, "restart", unit_name, ctx=ctx)
     return unit_name
 
 # %% [markdown]

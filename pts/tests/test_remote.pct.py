@@ -28,11 +28,14 @@ from appgarden.remote import (
     read_remote_file, write_remote_file, run_remote_command,
     read_garden_state, write_garden_state,
     read_ports_state, write_ports_state,
-    GARDEN_STATE_PATH, PORTS_PATH,
+    GARDEN_STATE_PATH, PORTS_PATH, PRIVILEGED_HELPER_PATH,
     DEFAULT_APP_ROOT, RemoteContext, make_remote_context,
     run_sudo_command, write_system_file,
     garden_state_path, ports_path, caddy_apps_dir, caddy_tunnels_dir,
     app_dir, source_dir, tunnels_state_path,
+    check_privileged_helper,
+    privileged_systemctl, privileged_install_unit,
+    privileged_remove_unit, privileged_journalctl,
 )
 from appgarden.config import ServerConfig
 
@@ -363,3 +366,234 @@ def test_garden_state_with_ctx():
     get_path = host.get_file.call_args.kwargs["remote_filename"]
     assert get_path == "/opt/garden/garden.json"
     assert state == {"apps": {}}
+
+# %% [markdown]
+# ## check_privileged_helper
+
+# %%
+#|export
+def test_check_privileged_helper_installed():
+    """check_privileged_helper returns True when wrapper exists."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    assert check_privileged_helper(host) is True
+
+# %%
+#|export
+def test_check_privileged_helper_missing():
+    """check_privileged_helper returns False when wrapper missing."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stderr = ""
+    host.run_shell_command.return_value = (False, output_mock)
+
+    assert check_privileged_helper(host) is False
+
+# %% [markdown]
+# ## privileged_systemctl
+
+# %%
+#|export
+def test_privileged_systemctl_root_passthrough():
+    """For root (needs_sudo=False), privileged_systemctl calls run_sudo_command directly."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = "active"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    ctx = RemoteContext(needs_sudo=False)
+    result = privileged_systemctl(host, "is-active", "appgarden-myapp.service", ctx=ctx)
+    assert result == "active"
+    cmd = host.run_shell_command.call_args.kwargs["command"]
+    assert cmd.startswith("systemctl is-active")
+    assert "_sudo" not in host.run_shell_command.call_args.kwargs
+
+# %%
+#|export
+def test_privileged_systemctl_root_no_ctx():
+    """With ctx=None, privileged_systemctl runs directly without sudo."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = "ok"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    result = privileged_systemctl(host, "daemon-reload", ctx=None)
+    assert result == "ok"
+    cmd = host.run_shell_command.call_args.kwargs["command"]
+    assert cmd == "systemctl daemon-reload"
+
+# %%
+#|export
+def test_privileged_systemctl_nonroot_wrapper():
+    """For non-root, privileged_systemctl routes through wrapper."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = "active"
+    # First call: check wrapper exists (test -x); second call: actual command
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),   # check_privileged_helper
+        (True, output_mock),             # actual systemctl via wrapper
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    result = privileged_systemctl(host, "restart", "appgarden-myapp.service", ctx=ctx)
+    assert result == "active"
+    # The second call should use the wrapper path
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert PRIVILEGED_HELPER_PATH in cmd
+    assert "systemctl restart" in cmd
+
+# %%
+#|export
+def test_privileged_systemctl_nonroot_daemon_reload():
+    """Non-root daemon-reload routes through wrapper without unit name."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),   # check_privileged_helper
+        (True, output_mock),
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    privileged_systemctl(host, "daemon-reload", ctx=ctx)
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert "systemctl daemon-reload" in cmd
+    assert PRIVILEGED_HELPER_PATH in cmd
+
+# %%
+#|export
+def test_privileged_systemctl_nonroot_caddy_reload():
+    """Non-root caddy reload routes through wrapper."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),
+        (True, output_mock),
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert "systemctl reload caddy" in cmd
+
+# %%
+#|export
+def test_privileged_systemctl_nonroot_no_wrapper():
+    """Non-root without wrapper raises helpful error."""
+    import pytest
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stderr = ""
+    host.run_shell_command.return_value = (False, output_mock)
+
+    ctx = RemoteContext(needs_sudo=True)
+    with pytest.raises(RuntimeError, match="Re-run.*server init"):
+        privileged_systemctl(host, "restart", "appgarden-myapp.service", ctx=ctx)
+
+# %% [markdown]
+# ## privileged_install_unit
+
+# %%
+#|export
+def test_privileged_install_unit_root():
+    """For root, privileged_install_unit writes directly via put_file."""
+    host = MagicMock()
+    host.put_file.return_value = True
+
+    ctx = RemoteContext(needs_sudo=False)
+    privileged_install_unit(host, "appgarden-myapp.service", "[Unit]\nDescription=test", ctx=ctx)
+    host.put_file.assert_called_once()
+    path = host.put_file.call_args.kwargs["remote_filename"]
+    assert path == "/etc/systemd/system/appgarden-myapp.service"
+
+# %%
+#|export
+def test_privileged_install_unit_nonroot():
+    """For non-root, privileged_install_unit writes temp file then calls wrapper."""
+    host = MagicMock()
+    host.put_file.return_value = True
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),   # check_privileged_helper
+        (True, output_mock),             # wrapper call
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    privileged_install_unit(host, "appgarden-myapp.service", "[Unit]\nDescription=test", ctx=ctx)
+
+    # Temp file written via put_file
+    host.put_file.assert_called_once()
+    tmp_path = host.put_file.call_args.kwargs["remote_filename"]
+    assert tmp_path.startswith("/tmp/appgarden-unit-")
+
+    # Wrapper called with install-unit
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert "install-unit" in cmd
+    assert PRIVILEGED_HELPER_PATH in cmd
+
+# %% [markdown]
+# ## privileged_remove_unit
+
+# %%
+#|export
+def test_privileged_remove_unit_root():
+    """For root, privileged_remove_unit uses rm -f directly."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.return_value = (True, output_mock)
+
+    ctx = RemoteContext(needs_sudo=False)
+    privileged_remove_unit(host, "appgarden-myapp.service", ctx=ctx)
+    cmd = host.run_shell_command.call_args.kwargs["command"]
+    assert "rm -f" in cmd
+    assert "appgarden-myapp.service" in cmd
+
+# %%
+#|export
+def test_privileged_remove_unit_nonroot():
+    """For non-root, privileged_remove_unit routes through wrapper."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = ""
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),   # check_privileged_helper
+        (True, output_mock),
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    privileged_remove_unit(host, "appgarden-myapp.service", ctx=ctx)
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert "remove-unit" in cmd
+    assert PRIVILEGED_HELPER_PATH in cmd
+
+# %% [markdown]
+# ## privileged_journalctl
+
+# %%
+#|export
+def test_privileged_journalctl_root():
+    """For root, privileged_journalctl runs journalctl directly."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = "log line 1\nlog line 2"
+    host.run_shell_command.return_value = (True, output_mock)
+
+    ctx = RemoteContext(needs_sudo=False)
+    result = privileged_journalctl(host, "appgarden-myapp.service", lines=100, ctx=ctx)
+    assert result == "log line 1\nlog line 2"
+    cmd = host.run_shell_command.call_args.kwargs["command"]
+    assert "journalctl -u" in cmd
+
+# %%
+#|export
+def test_privileged_journalctl_nonroot():
+    """For non-root, privileged_journalctl routes through wrapper."""
+    host = MagicMock()
+    output_mock = MagicMock(); output_mock.stdout = "log line"
+    host.run_shell_command.side_effect = [
+        (True, MagicMock(stdout="")),   # check_privileged_helper
+        (True, output_mock),
+    ]
+
+    ctx = RemoteContext(needs_sudo=True)
+    result = privileged_journalctl(host, "appgarden-myapp.service", lines=25, ctx=ctx)
+    assert result == "log line"
+    cmd = host.run_shell_command.call_args_list[1].kwargs["command"]
+    assert "journalctl" in cmd
+    assert "--lines 25" in cmd
+    assert PRIVILEGED_HELPER_PATH in cmd

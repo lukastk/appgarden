@@ -14,7 +14,7 @@ from .remote import (
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
     read_garden_state, write_garden_state, upload_directory,
-    run_sudo_command,
+    privileged_systemctl, privileged_remove_unit, privileged_journalctl,
 )
 from .routing import parse_url, remove_caddy_config
 from .ports import release_port
@@ -57,7 +57,7 @@ def list_apps_with_status(host, ctx: RemoteContext | None = None) -> list[AppInf
         else:
             unit = _systemd_unit_name(app.name)
             try:
-                result = run_sudo_command(host, f"systemctl is-active {shlex.quote(unit)}", ctx=ctx)
+                result = privileged_systemctl(host, "is-active", unit, ctx=ctx)
                 app.status = result.strip()
             except RuntimeError:
                 app.status = "inactive"
@@ -92,7 +92,7 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
     else:
         unit = _systemd_unit_name(name)
         try:
-            result = run_sudo_command(host, f"systemctl is-active {shlex.quote(unit)}", ctx=ctx)
+            result = privileged_systemctl(host, "is-active", unit, ctx=ctx)
             status = result.strip()
         except RuntimeError:
             status = "inactive"
@@ -114,19 +114,19 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
 def stop_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Stop an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl stop {shlex.quote(unit)}", ctx=ctx)
+    privileged_systemctl(host, "stop", unit, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 13
 def start_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Start an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl start {shlex.quote(unit)}", ctx=ctx)
+    privileged_systemctl(host, "start", unit, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 14
 def restart_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Restart an app's systemd service."""
     unit = _systemd_unit_name(name)
-    run_sudo_command(host, f"systemctl restart {shlex.quote(unit)}", ctx=ctx)
+    privileged_systemctl(host, "restart", unit, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 16
 def app_logs(host, name: str, lines: int = 50, follow: bool = False, ctx: RemoteContext | None = None) -> str:
@@ -137,8 +137,7 @@ def app_logs(host, name: str, lines: int = 50, follow: bool = False, ctx: Remote
     Returns the log output as a string.
     """
     unit = _systemd_unit_name(name)
-    cmd = f"journalctl -u {shlex.quote(unit)} --no-pager -n {int(lines)}"
-    return run_sudo_command(host, cmd, ctx=ctx, timeout=30)
+    return privileged_journalctl(host, unit, lines=lines, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 18
 def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | None = None) -> None:
@@ -156,16 +155,16 @@ def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | No
     if method != "static":
         unit = _systemd_unit_name(name)
         try:
-            run_sudo_command(host, f"systemctl stop {shlex.quote(unit)}", ctx=ctx)
+            privileged_systemctl(host, "stop", unit, ctx=ctx)
         except RuntimeError:
             pass
         try:
-            run_sudo_command(host, f"systemctl disable {shlex.quote(unit)}", ctx=ctx)
+            privileged_systemctl(host, "disable", unit, ctx=ctx)
         except RuntimeError:
             pass
         # Remove unit file
-        run_sudo_command(host, f"rm -f {shlex.quote(f'{SYSTEMD_UNIT_DIR}/{unit}')}", ctx=ctx)
-        run_sudo_command(host, "systemctl daemon-reload", ctx=ctx)
+        privileged_remove_unit(host, unit, ctx=ctx)
+        privileged_systemctl(host, "daemon-reload", ctx=ctx)
 
     # 2. Remove Caddy config
     remove_caddy_config(host, app_name=name, domain=domain, path=path,
@@ -228,10 +227,10 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
     if method != "static":
         unit = _systemd_unit_name(name)
         console.print("  [dim]Restarting service...[/dim]")
-        run_sudo_command(host, f"systemctl restart {shlex.quote(unit)}", ctx=ctx)
+        privileged_systemctl(host, "restart", unit, ctx=ctx)
     else:
         # Static: Caddy serves files directly, just reload
-        run_sudo_command(host, "systemctl reload caddy", ctx=ctx)
+        privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
     # 4. Update timestamp
     from datetime import datetime, timezone

@@ -364,12 +364,114 @@ appgarden version
 - **Port allocation**: Starting from port 10000, managed via `/srv/appgarden/ports.json`.
 - **Systemd**: Non-static apps run as systemd services for automatic restarts and log management.
 
+## Non-Root User Setup
+
+By default, the quick start examples use `root` as the SSH user. For production servers, it's recommended to create a dedicated deploy user with restricted privileges. AppGarden includes a privileged wrapper script that limits sudo access to only the operations needed for deployment.
+
+### 1. Create a deploy user on the server
+
+SSH into your server as root and create a user:
+
+```bash
+useradd -m -s /bin/bash appgarden-deploy
+```
+
+### 2. Set up SSH key authentication
+
+Copy your SSH public key to the new user:
+
+```bash
+# From your local machine
+ssh-copy-id -i ~/.ssh/id_rsa appgarden-deploy@<server-ip>
+```
+
+Or manually:
+
+```bash
+# On the server as root
+mkdir -p /home/appgarden-deploy/.ssh
+cp ~/.ssh/authorized_keys /home/appgarden-deploy/.ssh/authorized_keys
+chown -R appgarden-deploy:appgarden-deploy /home/appgarden-deploy/.ssh
+chmod 700 /home/appgarden-deploy/.ssh
+chmod 600 /home/appgarden-deploy/.ssh/authorized_keys
+```
+
+### 3. Add the server with the appgarden-deploy user
+
+```bash
+appgarden server add myserver \
+  --host <server-ip> \
+  --ssh-user appgarden-deploy \
+  --ssh-key ~/.ssh/id_rsa \
+  --domain apps.example.com
+```
+
+### 4. Initialize the server (as root)
+
+Server init requires full sudo access, so run it once as root (or a user with `NOPASSWD: ALL` sudoers access):
+
+```bash
+# Temporarily add the server with root access for init
+appgarden server add myserver-init \
+  --host <server-ip> \
+  --ssh-user root \
+  --ssh-key ~/.ssh/id_rsa \
+  --domain apps.example.com
+
+appgarden server init myserver-init --include group
+appgarden server remove myserver-init
+```
+
+This installs Docker, Caddy, creates the `appgarden` group, installs the privileged wrapper script at `/usr/local/bin/appgarden-privileged`, and configures a sudoers entry that grants the `appgarden` group passwordless sudo for **only** that wrapper.
+
+### 5. Add the appgarden-deploy user to the appgarden group
+
+On the server as root:
+
+```bash
+usermod -aG appgarden,docker appgarden-deploy
+```
+
+The user needs to log out and back in for the group membership to take effect. The `docker` group is needed for Docker-based deployment methods.
+
+### 6. Deploy as the non-root user
+
+All subsequent deploys use the restricted appgarden-deploy user:
+
+```bash
+appgarden deploy myapp \
+  --method dockerfile \
+  --source ./app/ \
+  --url myapp.apps.example.com
+```
+
+### How it works
+
+The privileged wrapper (`appgarden-privileged`) only allows:
+
+- `systemctl` operations on `appgarden-*.service` units (start, stop, restart, enable, disable, is-active, daemon-reload)
+- `systemctl reload caddy`
+- Installing/removing systemd unit files matching `appgarden-*.service`
+- `journalctl` for `appgarden-*.service` units
+
+All inputs are validated against strict patterns — no shell interpretation, no path traversal, no access to non-appgarden services. Root users bypass the wrapper entirely and execute commands directly.
+
+### Adding more deploy users
+
+```bash
+# On the server as root
+useradd -m -s /bin/bash newuser
+usermod -aG appgarden newuser
+usermod -aG docker newuser  # if deploying Docker apps
+```
+
 ## Security
 
 - SSH key-only authentication, hardened sshd config
 - UFW firewall: default deny, allow SSH/HTTP/HTTPS
 - Fail2ban for SSH brute-force protection
 - Automatic security updates via unattended-upgrades
+- Privileged wrapper restricts non-root users to appgarden-scoped operations only
 - Environment files stored with 600 permissions
 - Docker isolation for container-based apps
 - TLS via Caddy's automatic HTTPS (HTTP-01 challenge)
