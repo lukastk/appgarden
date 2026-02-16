@@ -257,7 +257,10 @@ def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 
             if attempt < retries - 1:
                 time.sleep(5)
     if last_err is not None:
-        raise last_err
+        host_addr = resolve_host(server)
+        raise ConnectionError(
+            f"Failed to connect to {server.ssh_user}@{host_addr}: {last_err}"
+        ) from last_err
 
     try:
         yield host
@@ -309,7 +312,10 @@ def run_remote_command(host, cmd: str, timeout: int = 30) -> str:
 def read_garden_state(host, ctx: RemoteContext | None = None) -> dict:
     """Read the garden state from garden.json."""
     raw = read_remote_file(host, garden_state_path(ctx))
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Corrupted garden.json on server: {e}. You may need to re-run 'server init'.")
 
 # %%
 #|export
@@ -326,7 +332,10 @@ def write_garden_state(host, state: dict, ctx: RemoteContext | None = None) -> N
 def read_ports_state(host, ctx: RemoteContext | None = None) -> dict:
     """Read port allocations from ports.json."""
     raw = read_remote_file(host, ports_path(ctx))
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Corrupted ports.json on server: {e}. You may need to re-run 'server init'.")
 
 # %%
 #|export
@@ -343,8 +352,13 @@ def write_ports_state(host, state: dict, ctx: RemoteContext | None = None) -> No
 # %%
 #|export
 def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: str) -> None:
-    """Upload a local directory to the remote server using rsync."""
+    """Upload a local directory to the remote server using rsync.
+
+    Uses the SSH agent when available (needed for encrypted keys).
+    Falls back to specifying the key file directly.
+    """
     import subprocess
+    import os
 
     host_addr = resolve_host(server)
     ssh_key = str(Path(server.ssh_key).expanduser())
@@ -352,13 +366,30 @@ def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: 
     if not local.endswith("/"):
         local += "/"
 
+    # If an SSH agent is running, let it handle auth (supports encrypted keys).
+    # Still pass -i so the agent knows which key to offer.
+    ssh_opts = f"ssh -o StrictHostKeyChecking=accept-new -i {shlex.quote(ssh_key)}"
+
     cmd = [
         "rsync", "-az", "--delete",
-        "-e", f"ssh -i {shlex.quote(ssh_key)} -o StrictHostKeyChecking=accept-new",
+        "-e", ssh_opts,
         local,
         f"{server.ssh_user}@{host_addr}:{remote_path}/",
     ]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError("'rsync' is not installed. Install it to deploy local source directories.")
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip()
+        if "permission denied" in stderr.lower() or e.returncode == 255:
+            raise RuntimeError(
+                f"SSH authentication failed during rsync. "
+                f"If your key is encrypted, ensure ssh-agent is running and your key is loaded:\n"
+                f"  eval $(ssh-agent) && ssh-add {shlex.quote(ssh_key)}\n"
+                f"rsync stderr: {stderr}"
+            )
+        raise RuntimeError(f"rsync failed (exit {e.returncode}): {stderr}")
 
 # %% [markdown]
 # ## File locking
@@ -378,7 +409,10 @@ def read_garden_state_locked(host, ctx: RemoteContext | None = None) -> dict:
     lock = _lock_path(ctx)
     path = garden_state_path(ctx)
     raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Corrupted garden.json on server: {e}. You may need to re-run 'server init'.")
 
 def write_garden_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
     """Write garden state under flock (write tmp, then atomic mv under lock)."""
@@ -394,7 +428,10 @@ def read_ports_state_locked(host, ctx: RemoteContext | None = None) -> dict:
     lock = _lock_path(ctx)
     path = ports_path(ctx)
     raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Corrupted ports.json on server: {e}. You may need to re-run 'server init'.")
 
 def write_ports_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
     """Write ports state under flock (write tmp, then atomic mv under lock)."""

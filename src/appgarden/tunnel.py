@@ -109,7 +109,7 @@ def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str, ctx: Re
         _remove_tunnel_caddy(host, tunnel_id, ctx=ctx)
         try:
             release_port(host, app_name)
-        except ValueError:
+        except (ValueError, RuntimeError):
             pass
         _unregister_tunnel(host, tunnel_id, ctx=ctx)
 
@@ -149,6 +149,8 @@ def open_tunnel(server: ServerConfig, local_port: int, url: str) -> None:
     try:
         proc = subprocess.Popen(ssh_cmd)
         proc.wait()
+    except FileNotFoundError:
+        raise RuntimeError("'ssh' command not found. Ensure OpenSSH is installed.")
     except KeyboardInterrupt:
         console.print("\n[yellow]Closing tunnel...[/yellow]")
     finally:
