@@ -136,9 +136,31 @@ def write_system_file(host, path: str, content: str, ctx: RemoteContext | None =
         raise RuntimeError(f"Failed to write system file: {path}")
 
 # %% pts/appgarden/01_remote.pct.py 18
+def _make_ssh_state(server: ServerConfig, connect_timeout: int = 30,
+                    ssh_key_password: str | None = None):
+    """Build pyinfra Inventory/State for an SSH connection."""
+    host_addr = resolve_host(server)
+    ssh_key = str(Path(server.ssh_key).expanduser())
+
+    override_data = {
+        "ssh_user": server.ssh_user,
+        "ssh_key": ssh_key,
+        "ssh_strict_host_key_checking": "accept-new",
+    }
+    if ssh_key_password is not None:
+        override_data["ssh_key_password"] = ssh_key_password
+
+    inventory = Inventory(([host_addr], {}), override_data=override_data)
+    config = Config(CONNECT_TIMEOUT=connect_timeout)
+    state = State(inventory, config)
+    state.init(inventory, config)
+    return inventory, state
+
 @contextmanager
 def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 3):
     """Context manager that yields a connected pyinfra Host object.
+
+    If the SSH key is encrypted, prompts for the passphrase.
 
     Usage::
 
@@ -146,22 +168,9 @@ def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 
             ok, out = host.run_shell_command("hostname")
     """
     import time
+    from getpass import getpass
 
-    host_addr = resolve_host(server)
-    ssh_key = str(Path(server.ssh_key).expanduser())
-
-    inventory = Inventory(
-        ([host_addr], {}),
-        override_data={
-            "ssh_user": server.ssh_user,
-            "ssh_key": ssh_key,
-            "ssh_strict_host_key_checking": "accept-new",
-        },
-    )
-    config = Config(CONNECT_TIMEOUT=connect_timeout)
-    state = State(inventory, config)
-    state.init(inventory, config)
-
+    inventory, state = _make_ssh_state(server, connect_timeout)
     host = list(inventory)[0]
 
     # Retry connection for freshly provisioned servers
@@ -172,6 +181,19 @@ def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 
             last_err = None
             break
         except Exception as e:
+            # Detect encrypted key error — prompt for passphrase and rebuild
+            if "encrypted" in str(e).lower() and attempt == 0:
+                ssh_key = str(Path(server.ssh_key).expanduser())
+                password = getpass(f"SSH key passphrase ({ssh_key}): ")
+                inventory, state = _make_ssh_state(server, connect_timeout, ssh_key_password=password)
+                host = list(inventory)[0]
+                try:
+                    host.connect(raise_exceptions=True)
+                    last_err = None
+                    break
+                except Exception as e2:
+                    last_err = e2
+                    break
             last_err = e
             if attempt < retries - 1:
                 time.sleep(5)
