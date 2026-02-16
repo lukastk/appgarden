@@ -36,7 +36,8 @@ from appgarden.remote import (
 )
 from appgarden.routing import parse_url, remove_caddy_config
 from appgarden.ports import release_port
-from appgarden.deploy import _app_dir, _source_dir, _systemd_unit_name, is_git_url, SYSTEMD_UNIT_DIR
+from appgarden.deploy import _app_dir, _source_dir, _systemd_unit_name, _write_env_file, is_git_url, SYSTEMD_UNIT_DIR
+from appgarden.routing import render_template
 
 console = Console()
 
@@ -193,10 +194,20 @@ def remove_app_metadata_keys(host, name: str, keys: list[str], ctx: RemoteContex
 
 # %%
 #|export
+def _update_app_status(host, name: str, status: str, ctx: RemoteContext | None = None) -> None:
+    """Update the status field for an app in garden.json."""
+    state = read_garden_state(host, ctx=ctx)
+    if name in state.get("apps", {}):
+        state["apps"][name]["status"] = status
+        write_garden_state(host, state, ctx=ctx)
+
+# %%
+#|export
 def stop_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Stop an app's systemd service."""
     unit = _systemd_unit_name(name)
     privileged_systemctl(host, "stop", unit, ctx=ctx)
+    _update_app_status(host, name, "inactive", ctx=ctx)
 
 # %%
 #|export
@@ -204,6 +215,7 @@ def start_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Start an app's systemd service."""
     unit = _systemd_unit_name(name)
     privileged_systemctl(host, "start", unit, ctx=ctx)
+    _update_app_status(host, name, "active", ctx=ctx)
 
 # %%
 #|export
@@ -211,6 +223,7 @@ def restart_app(host, name: str, ctx: RemoteContext | None = None) -> None:
     """Restart an app's systemd service."""
     unit = _systemd_unit_name(name)
     privileged_systemctl(host, "restart", unit, ctx=ctx)
+    _update_app_status(host, name, "active", ctx=ctx)
 
 # %% [markdown]
 # ## app_logs
@@ -319,11 +332,34 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
         gitignore = entry.get("gitignore", True)
         upload_directory(server, source, source_path, exclude=exclude, gitignore=gitignore)
 
-    # 2. Rebuild Docker image if applicable
+    # 2. Rebuild Docker image and regenerate docker-compose.yml if applicable
     if method in ("dockerfile", "auto"):
         image_name = f"appgarden-{name}"
         console.print("  [dim]Rebuilding Docker image...[/dim]")
         run_remote_command(host, f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}", timeout=600)
+
+        # Regenerate docker-compose.yml with stored settings
+        adir = _app_dir(name, ctx)
+        port = entry.get("port")
+        container_port = entry.get("container_port", 3000)
+        volumes = entry.get("volumes")
+        try:
+            run_remote_command(host, f"test -f {shlex.quote(adir + '/.env')}")
+            env_file_flag = ".env"
+        except RuntimeError:
+            env_file_flag = None
+        compose_content = render_template(
+            "docker-compose.yml.j2",
+            port=port,
+            container_port=container_port,
+            env_file=env_file_flag,
+            volumes=volumes or None,
+        )
+        compose_content = compose_content.replace(
+            "    build: .",
+            f"    image: {image_name}",
+        )
+        write_remote_file(host, f"{adir}/docker-compose.yml", compose_content)
 
     # 3. Restart service (if not static)
     if method != "static":
@@ -334,8 +370,9 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
         # Static: Caddy serves files directly, just reload
         privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
-    # 4. Update timestamp
+    # 4. Update timestamp and status
     from datetime import datetime, timezone
     entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+    entry["status"] = "serving" if method == "static" else "active"
     state["apps"][name] = entry
     write_garden_state(host, state, ctx=ctx)

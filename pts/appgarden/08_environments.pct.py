@@ -52,6 +52,7 @@ class EnvironmentConfig:
     env_file: str | None = None
     meta: dict = field(default_factory=dict)
     exclude: list[str] = field(default_factory=list)
+    volumes: list[str] = field(default_factory=list)
     gitignore: bool = True
 
 # %%
@@ -161,9 +162,19 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
             seen.add(pat)
             merged_exclude.append(pat)
 
+    # For volumes, concatenate and deduplicate (preserving order)
+    app_volumes = merged.pop("volumes", [])
+    env_volumes = env_data.get("volumes", [])
+    seen_vol: set[str] = set()
+    merged_volumes: list[str] = []
+    for vol in list(app_volumes) + list(env_volumes):
+        if vol not in seen_vol:
+            seen_vol.add(vol)
+            merged_volumes.append(vol)
+
     # Overlay all other env-specific keys
     for k, v in env_data.items():
-        if k not in ("env", "meta", "exclude"):
+        if k not in ("env", "meta", "exclude", "volumes"):
             merged[k] = v
 
     app_name = derive_app_name(config.app_name, env_name)
@@ -204,6 +215,7 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         env_file=merged.get("env_file"),
         meta=merged_meta,
         exclude=merged_exclude,
+        volumes=merged_volumes,
         gitignore=merged.get("gitignore", True),
     )
 

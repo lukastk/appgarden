@@ -368,7 +368,7 @@ def _resolve_deploy_params(
     result = dict(DEPLOY_DEFAULTS)
     for layer in [global_defaults, project_defaults, env_cfg, cli]:
         if layer:
-            result.update({k: v for k, v in layer.items() if v is not None and k != "exclude"})
+            result.update({k: v for k, v in layer.items() if v is not None and k not in ("exclude", "volumes")})
 
     # Concatenate exclude lists across layers (deduped, preserving order)
     seen: set[str] = set()
@@ -382,6 +382,18 @@ def _resolve_deploy_params(
     if merged_exclude:
         result["exclude"] = merged_exclude
 
+    # Concatenate volumes lists across layers (deduped, preserving order)
+    seen_vol: set[str] = set()
+    merged_volumes: list[str] = []
+    for layer in [global_defaults, project_defaults, env_cfg, cli]:
+        if layer and layer.get("volumes"):
+            for vol in layer["volumes"]:
+                if vol not in seen_vol:
+                    seen_vol.add(vol)
+                    merged_volumes.append(vol)
+    if merged_volumes:
+        result["volumes"] = merged_volumes
+
     return result
 
 # %%
@@ -394,6 +406,7 @@ def _dispatch_deploy(
     env_vars: dict[str, str] | None = None, env_file: str | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None, gitignore: bool = True,
+    volumes: list[str] | None = None,
 ) -> None:
     """Dispatch to the appropriate deploy function based on method."""
     if method == "static":
@@ -426,7 +439,7 @@ def _dispatch_deploy(
         deploy_dockerfile(srv, name, source, url, port=port,
                           container_port=container_port, branch=branch,
                           env_vars=env_vars, env_file=env_file, meta=meta,
-                          exclude=exclude, gitignore=gitignore)
+                          exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     elif method == "auto":
         if not source:
@@ -438,7 +451,7 @@ def _dispatch_deploy(
         deploy_auto(srv, name, source, cmd, url, port=port,
                     container_port=container_port, setup_cmd=setup_cmd,
                     branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
-                    exclude=exclude, gitignore=gitignore)
+                    exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     else:
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
@@ -461,6 +474,8 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
         d["meta"] = dict(env_cfg.meta)
     if env_cfg.exclude:
         d["exclude"] = list(env_cfg.exclude)
+    if env_cfg.volumes:
+        d["volumes"] = list(env_cfg.volumes)
     if not env_cfg.gitignore:
         d["gitignore"] = False
     return d
@@ -515,6 +530,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         env_vars=params.get("env"), env_file=params.get("env_file"),
         meta=params.get("meta"),
         exclude=params.get("exclude"), gitignore=params.get("gitignore", True),
+        volumes=params.get("volumes"),
     )
 
 # %%
@@ -538,6 +554,7 @@ def deploy(
     env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
     meta: Optional[list[str]] = typer.Option(None, "--meta", help="Metadata (KEY=VALUE, repeatable)"),
     exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Rsync exclude pattern (repeatable)"),
+    volume: Optional[list[str]] = typer.Option(None, "--volume", help="Volume mount (host:container[:opts], repeatable)"),
     no_gitignore: bool = typer.Option(False, "--no-gitignore", help="Don't filter uploads using .gitignore"),
     all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
     project_path: Optional[str] = typer.Option(None, "--project", "-P", help="Path to appgarden.toml or directory containing it"),
@@ -566,6 +583,8 @@ def deploy(
         cli_flags["meta"] = meta_dict
     if exclude:
         cli_flags["exclude"] = list(exclude)
+    if volume:
+        cli_flags["volumes"] = list(volume)
     if no_gitignore:
         cli_flags["gitignore"] = False
 

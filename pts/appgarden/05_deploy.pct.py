@@ -239,6 +239,7 @@ def _register_app(
     extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
+    volumes: list[str] | None = None,
     ctx: RemoteContext | None = None,
 ) -> dict:
     """Register an app in garden.json and write app.json. Returns the app entry."""
@@ -249,6 +250,7 @@ def _register_app(
         "method": method,
         "url": url,
         "routing": "subdirectory" if path else "subdomain",
+        "status": "serving" if method == "static" else "active",
         "created_at": now,
         "updated_at": now,
     }
@@ -268,6 +270,8 @@ def _register_app(
         app_entry["exclude"] = exclude
     if not gitignore:
         app_entry["gitignore"] = False
+    if volumes:
+        app_entry["volumes"] = volumes
     if extra:
         app_entry.update(extra)
 
@@ -469,6 +473,7 @@ def deploy_dockerfile(
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
+    volumes: list[str] | None = None,
 ) -> None:
     """Deploy an app from a Dockerfile."""
     ctx = make_remote_context(server)
@@ -506,7 +511,7 @@ def deploy_dockerfile(
             port=port,
             container_port=container_port,
             env_file=".env" if env_path else None,
-            volumes=None,
+            volumes=volumes or None,
         )
         # Replace "build: ." with "image: <image>" since we pre-built
         compose_content = compose_content.replace(
@@ -544,7 +549,8 @@ def deploy_dockerfile(
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
             extra={"meta": meta} if meta else None,
-            exclude=exclude, gitignore=gitignore, ctx=ctx,
+            exclude=exclude, gitignore=gitignore,
+            volumes=volumes, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

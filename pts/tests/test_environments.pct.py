@@ -730,3 +730,95 @@ def test_env_config_to_dict_omits_default_gitignore():
     d = _env_config_to_dict(env)
     assert "gitignore" not in d
     assert "exclude" not in d
+
+# %% [markdown]
+# ## Volume list merging
+
+# %%
+#|export
+def test_resolve_volumes_concatenation(tmp_path):
+    """Environment volumes are concatenated with app-level volumes."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+volumes = ["./data:/app/data"]
+
+[environments.production]
+url = "myapp.example.com"
+volumes = ["/var/logs:/app/logs:ro"]
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.volumes == ["./data:/app/data", "/var/logs:/app/logs:ro"]
+
+# %%
+#|export
+def test_resolve_volumes_dedup(tmp_path):
+    """Duplicate volume entries are removed (preserving order)."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+volumes = ["./data:/app/data", "/var/logs:/app/logs"]
+
+[environments.production]
+url = "myapp.example.com"
+volumes = ["/var/logs:/app/logs", "/tmp:/app/tmp"]
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.volumes == ["./data:/app/data", "/var/logs:/app/logs", "/tmp:/app/tmp"]
+
+# %%
+#|export
+def test_resolve_volumes_empty_default(tmp_path):
+    """Environments without volumes get empty list."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.volumes == []
+
+# %%
+#|export
+def test_env_config_to_dict_includes_volumes():
+    """_env_config_to_dict includes non-empty volumes."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+        volumes=["./data:/app/data"],
+    )
+    d = _env_config_to_dict(env)
+    assert d["volumes"] == ["./data:/app/data"]
+
+# %%
+#|export
+def test_env_config_to_dict_omits_empty_volumes():
+    """_env_config_to_dict omits empty volumes."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+    )
+    d = _env_config_to_dict(env)
+    assert "volumes" not in d
+
+# %%
+#|export
+def test_cascade_volumes_across_layers():
+    """_resolve_deploy_params concatenates volumes across cascade layers."""
+    global_defaults = {"volumes": ["./global:/app/global"]}
+    project_defaults = {"volumes": ["./proj:/app/proj"]}
+    env_cfg = {"volumes": ["./env:/app/env"]}
+    cli = {"volumes": ["./cli:/app/cli"]}
+    result = _resolve_deploy_params(cli, env_cfg=env_cfg, project_defaults=project_defaults, global_defaults=global_defaults)
+    assert result["volumes"] == ["./global:/app/global", "./proj:/app/proj", "./env:/app/env", "./cli:/app/cli"]

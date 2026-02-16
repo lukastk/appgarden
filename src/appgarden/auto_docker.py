@@ -128,6 +128,7 @@ def deploy_auto(
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
+    volumes: list[str] | None = None,
 ) -> None:
     """Auto-detect runtime, generate Dockerfile, build and deploy."""
     ctx = make_remote_context(server)
@@ -194,7 +195,7 @@ def deploy_auto(
             port=port,
             container_port=container_port,
             env_file=".env" if env_path else None,
-            volumes=None,
+            volumes=volumes or None,
         )
         compose_content = compose_content.replace(
             "    build: .",
@@ -233,7 +234,8 @@ def deploy_auto(
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
+            extra=extra, exclude=exclude, gitignore=gitignore,
+            volumes=volumes, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

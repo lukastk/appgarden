@@ -488,6 +488,75 @@ def test_deploy_command_with_meta():
 
 # %%
 #|export
+def test_deploy_static_sets_status_serving():
+    """deploy_static sets status to 'serving' in garden.json."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(_make_server(), "mysite", "/tmp/site", "mysite.apps.example.com")
+
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["mysite"]["status"] == "serving"
+
+# %%
+#|export
+def test_deploy_command_sets_status_active():
+    """deploy_command sets status to 'active' in garden.json."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_command(
+            _make_server(), "myapp", "python app.py",
+            "myapp.apps.example.com",
+        )
+
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["myapp"]["status"] == "active"
+
+# %%
+#|export
+def test_deploy_dockerfile_with_volumes():
+    """deploy_dockerfile passes volumes to docker-compose.yml and stores in garden.json."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_dockerfile(
+            _make_server(), "webapp", "/tmp/app",
+            "webapp.apps.example.com",
+            volumes=["./data:/app/data", "/var/logs:/app/logs:ro"],
+        )
+
+    written = _get_written_files(host)
+
+    # docker-compose.yml should contain the volume mounts
+    compose_files = [p for p in written if "docker-compose.yml" in p]
+    assert len(compose_files) == 1
+    compose_content = written[compose_files[0]]
+    assert "./data:/app/data" in compose_content
+    assert "/var/logs:/app/logs:ro" in compose_content
+
+    # garden.json should store the volumes
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["webapp"]["volumes"] == ["./data:/app/data", "/var/logs:/app/logs:ro"]
+
+# %%
+#|export
 def test_deploy_static_with_exclude():
     """deploy_static passes exclude/gitignore to rsync and stores in garden.json."""
     host = _mock_host()

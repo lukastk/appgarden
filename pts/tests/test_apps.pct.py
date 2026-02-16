@@ -27,7 +27,7 @@ from appgarden.config import ServerConfig
 from appgarden.apps import (
     list_apps, list_apps_with_status, app_status,
     stop_app, start_app, restart_app,
-    remove_app, redeploy_app,
+    remove_app, redeploy_app, _update_app_status,
     get_app_metadata, set_app_metadata, update_app_metadata, remove_app_metadata_keys,
     AppInfo, AppStatus,
 )
@@ -394,3 +394,51 @@ def test_app_status_includes_meta():
     host = _mock_host(garden_state=state)
     status = app_status(host, "docs")
     assert status.meta == {"team": "docs"}
+
+# %% [markdown]
+# ## Status tracking in garden.json
+
+# %%
+#|export
+def _get_last_garden_write(host):
+    """Extract the last garden.json written via put_file on a mock host."""
+    written = {}
+    for c in host.put_file.call_args_list:
+        path = c.kwargs.get("remote_filename", "")
+        bio = c.kwargs.get("filename_or_io")
+        if bio and "garden.json" in path:
+            written[path] = bio.getvalue().decode("utf-8")
+    garden_writes = [v for k, v in written.items() if "garden.json" in k]
+    if garden_writes:
+        return json.loads(garden_writes[-1])
+    return None
+
+# %%
+#|export
+def test_stop_app_updates_status():
+    """stop_app writes status='inactive' to garden.json."""
+    host = _mock_host()
+    stop_app(host, "myapp")
+    garden = _get_last_garden_write(host)
+    assert garden is not None
+    assert garden["apps"]["myapp"]["status"] == "inactive"
+
+# %%
+#|export
+def test_start_app_updates_status():
+    """start_app writes status='active' to garden.json."""
+    host = _mock_host()
+    start_app(host, "myapp")
+    garden = _get_last_garden_write(host)
+    assert garden is not None
+    assert garden["apps"]["myapp"]["status"] == "active"
+
+# %%
+#|export
+def test_restart_app_updates_status():
+    """restart_app writes status='active' to garden.json."""
+    host = _mock_host()
+    restart_app(host, "myapp")
+    garden = _get_last_garden_write(host)
+    assert garden is not None
+    assert garden["apps"]["myapp"]["status"] == "active"
