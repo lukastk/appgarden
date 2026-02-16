@@ -5,7 +5,7 @@ container_port = 3000
 source = "."
 
 [environments.production]
-subdomain = "{app.name}"
+subdomain = "{app.slug}"
 
 [environments.dev]
-subdomain = "{app.name}-dev"
+subdomain = "{app.slug}-dev"

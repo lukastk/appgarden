@@ -78,7 +78,8 @@ CADDYFILE_CONTENT = CADDYFILE_TEMPLATE.format(app_root=APPGARDEN_ROOT)
 CADDYFILE_MARKER_BEGIN = "# BEGIN APPGARDEN MANAGED BLOCK"
 CADDYFILE_MARKER_END = "# END APPGARDEN MANAGED BLOCK"
 
-INIT_STEPS = {"update", "docker", "caddy", "firewall", "ssh", "fail2ban", "upgrades"}
+INIT_STEPS = {"update", "docker", "caddy", "firewall", "ssh", "fail2ban", "upgrades", "group"}
+INIT_STEPS_OFF = {"firewall", "ssh", "fail2ban", "group"}
 
 SSH_HARDENING_CONTENT = """\
 PasswordAuthentication no
@@ -217,9 +218,20 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         ]
         _run(host, f"mkdir -p {' '.join(dirs)}", "Creating directory structure", ctx=ctx)
 
-        # 10. Chown app root for non-root users (essential)
+        # 10. Create appgarden group (optional, opt-in)
+        if "group" not in skip:
+            _run(host,
+                 f"groupadd -f appgarden && "
+                 f"usermod -aG appgarden {server.ssh_user} && "
+                 f"chgrp -R appgarden {app_root} && "
+                 f"chmod -R g+rwX {app_root} && "
+                 f"find {app_root} -type d -exec chmod g+s {{}} +",
+                 "Creating appgarden group", ctx=ctx)
+
+        # 11. Chown app root for non-root users (essential)
         if ctx.needs_sudo:
-            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root}",
+            group = "appgarden" if "group" not in skip else server.ssh_user
+            _run(host, f"chown -R {server.ssh_user}:{group} {app_root}",
                  "Setting app root ownership", ctx=ctx)
             if "docker" not in skip:
                 _run(host, f"usermod -aG docker {server.ssh_user}",

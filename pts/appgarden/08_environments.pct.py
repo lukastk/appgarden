@@ -67,11 +67,17 @@ class ProjectConfig:
 # %%
 #|export
 def load_project_config(path: str | Path = ".") -> ProjectConfig:
-    """Load appgarden.toml from the given directory.
+    """Load project config from a directory or explicit toml file.
 
-    Raises FileNotFoundError if no appgarden.toml exists.
+    If *path* points to a file, that file is loaded directly.
+    If *path* is a directory, ``appgarden.toml`` inside it is loaded.
+    Raises FileNotFoundError if the file does not exist.
     """
-    p = Path(path) / "appgarden.toml"
+    p = Path(path)
+    if p.is_file():
+        pass  # use the file as-is
+    else:
+        p = p / "appgarden.toml"
     if not p.exists():
         raise FileNotFoundError(f"No appgarden.toml found in {Path(path).resolve()}")
 

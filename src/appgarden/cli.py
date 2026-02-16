@@ -13,7 +13,7 @@ from .config import (
     AppGardenConfig, ServerConfig,
     load_config, save_config, config_path, get_server,
 )
-from .server import init_server, ping_server, INIT_STEPS
+from .server import init_server, ping_server, INIT_STEPS, INIT_STEPS_OFF
 from .deploy import deploy_static, deploy_command, deploy_docker_compose, deploy_dockerfile
 from .auto_docker import deploy_auto
 from .apps import (
@@ -187,10 +187,35 @@ def server_default(
 @server_app.command("init")
 def server_init_cmd(
     name: Optional[str] = typer.Argument(None, help="Server name (uses default if omitted)"),
-    skip: Optional[list[str]] = typer.Option(None, "--skip", help="Skip optional steps (update, docker, caddy, firewall, ssh, fail2ban, upgrades)"),
+    skip: Optional[list[str]] = typer.Option(None, "--skip", help="Skip optional steps"),
+    include: Optional[list[str]] = typer.Option(None, "--include", help="Enable opt-in steps (firewall, ssh, fail2ban, group)"),
     minimal: bool = typer.Option(False, "--minimal", help="Only run essential steps (skip all optional)"),
 ):
-    """Initialise a server for AppGarden (installs Docker, Caddy, etc.)."""
+    """Initialise a server for AppGarden (installs Docker, Caddy, etc.).
+
+    Steps run in order:
+
+    \b
+    Optional steps (on by default, skip with --skip):
+      1. update   - Update system packages
+      2. docker   - Install Docker CE
+      3. caddy    - Install Caddy
+      4. upgrades - Enable unattended-upgrades
+    \b
+    Opt-in steps (off by default, enable with --include):
+      5. firewall - Configure UFW firewall
+      6. ssh      - Harden SSH config
+      7. fail2ban - Install fail2ban
+      8. group    - Create appgarden user group
+    \b
+    Essential steps (always run):
+      9. caddyfile - Configure Caddyfile
+     10. dirs      - Create directory structure
+     11. state     - Initialise state files
+     12. services  - Start Docker & Caddy
+
+    Use --minimal to skip all optional steps.
+    """
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, name)
@@ -198,20 +223,24 @@ def server_init_cmd(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
-    # Build merged skip set: CLI --skip > --minimal > config init.skip
-    if minimal:
-        merged_skip = set(INIT_STEPS)
-    else:
-        merged_skip = set(srv.init.skip)
-        if skip:
-            merged_skip |= set(skip)
-
-    # Validate skip values
-    invalid = merged_skip - INIT_STEPS
+    # Validate step names
+    all_names = set(skip or []) | set(include or [])
+    invalid = all_names - INIT_STEPS
     if invalid:
         console.print(f"[red]Error:[/red] Unknown init step(s): {', '.join(sorted(invalid))}. "
                        f"Valid steps: {', '.join(sorted(INIT_STEPS))}")
         raise typer.Exit(code=1)
+
+    # Build skip set: start with off-by-default steps, merge config, apply CLI flags
+    if minimal:
+        merged_skip = set(INIT_STEPS)
+    else:
+        merged_skip = set(INIT_STEPS_OFF) | set(srv.init.skip)
+        if skip:
+            merged_skip |= set(skip)
+    # --include always enables, even with --minimal
+    if include:
+        merged_skip -= set(include)
 
     init_server(srv, skip=merged_skip)
 
@@ -383,7 +412,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
 # %% pts/appgarden/10_cli.pct.py 28
 @app.command()
 def deploy(
-    name: str = typer.Argument(help="App name or environment name"),
+    name: Optional[str] = typer.Argument(None, help="App name or environment name (deploys all envs if omitted with a project)"),
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
     method: Optional[str] = typer.Option(None, "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
     source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
@@ -405,8 +434,7 @@ def deploy(
 
     If an appgarden.toml exists in the current directory (or the path
     given by --project), NAME can be an environment name (e.g.
-    'production', 'staging'). Use --all-envs to deploy all environments
-    at once.
+    'production', 'staging'). Omit NAME to deploy all environments.
     """
     cfg = load_config()
 
@@ -424,12 +452,14 @@ def deploy(
 
     global_defaults = cfg.defaults or None
 
-    # Resolve --project path: file -> parent dir, dir -> as-is, default -> "."
+    # Resolve --project path
     _project_dir = "."
+    _project_file = None  # explicit file path, or None to use dir default
     if project_path:
         from pathlib import Path as _Path
         pp = _Path(project_path)
         if pp.is_file():
+            _project_file = str(pp)
             _project_dir = str(pp.parent)
         else:
             _project_dir = project_path
@@ -437,7 +467,7 @@ def deploy(
     # Try loading project config
     project = None
     try:
-        project = load_project_config(_project_dir)
+        project = load_project_config(_project_file or _project_dir)
     except FileNotFoundError:
         pass
 
@@ -458,8 +488,8 @@ def deploy(
             params["env_file"] = str(resolved)
         return params
 
-    # --all-envs: deploy every environment with cascading
-    if all_envs:
+    # Deploy all environments: explicit --all-envs or name omitted with a project
+    if all_envs or (name is None and project and project.environments):
         if not project:
             console.print(f"[red]Error:[/red] No appgarden.toml found in {_Path(_project_dir).resolve() if project_path else 'current directory'}")
             raise typer.Exit(code=1)
@@ -469,6 +499,10 @@ def deploy(
             params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
             _deploy_from_params(cfg, _resolve_local_paths(params), resolved_env.app_name)
         return
+
+    if name is None:
+        console.print("[red]Error:[/red] NAME is required (or use --project with an appgarden.toml that defines environments)")
+        raise typer.Exit(code=1)
 
     # Check if name matches an environment
     env_overrides = None
