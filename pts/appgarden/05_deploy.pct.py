@@ -84,10 +84,13 @@ def upload_source(
     source: str,
     branch: str | None = None,
     ctx: RemoteContext | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> str:
     """Upload or clone source code to the remote server.
 
     Returns ``"local"`` or ``"git"`` indicating the source type.
+    *exclude* and *gitignore* are only used for local uploads.
     """
     remote_source = _source_dir(name, ctx)
     run_remote_command(host, f"mkdir -p {shlex.quote(remote_source)}")
@@ -103,7 +106,7 @@ def upload_source(
         )
         return "git"
     else:
-        upload_directory(server, source, remote_source)
+        upload_directory(server, source, remote_source, exclude=exclude, gitignore=gitignore)
         return "local"
 
 # %% [markdown]
@@ -121,6 +124,8 @@ def deploy_static(
     url: str,
     branch: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> None:
     """Deploy a static site to the remote server.
 
@@ -135,7 +140,8 @@ def deploy_static(
     with ssh_connect(server) as host:
         # 1. Upload source
         console.print("  [dim]Uploading source...[/dim]")
-        source_type = upload_source(server, host, name, source, branch, ctx=ctx)
+        source_type = upload_source(server, host, name, source, branch, ctx=ctx,
+                                    exclude=exclude, gitignore=gitignore)
         source_path = _source_dir(name, ctx)
 
         # 2. Deploy Caddy config
@@ -151,7 +157,8 @@ def deploy_static(
         _register_app(
             host, garden_state, name, "static", url,
             source=source, source_type=source_type, branch=branch,
-            extra={"meta": meta} if meta else None, ctx=ctx,
+            extra={"meta": meta} if meta else None,
+            exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -230,6 +237,8 @@ def _register_app(
     branch: str | None = None,
     systemd_unit: str | None = None,
     extra: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
     ctx: RemoteContext | None = None,
 ) -> dict:
     """Register an app in garden.json and write app.json. Returns the app entry."""
@@ -255,6 +264,10 @@ def _register_app(
         app_entry["branch"] = branch
     if systemd_unit:
         app_entry["systemd_unit"] = systemd_unit
+    if exclude:
+        app_entry["exclude"] = exclude
+    if not gitignore:
+        app_entry["gitignore"] = False
     if extra:
         app_entry.update(extra)
 
@@ -283,6 +296,8 @@ def deploy_command(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> None:
     """Deploy a bare-process app managed by systemd."""
     ctx = make_remote_context(server)
@@ -296,7 +311,8 @@ def deploy_command(
         source_type = None
         if source:
             console.print("  [dim]Uploading source...[/dim]")
-            source_type = upload_source(server, host, name, source, branch, ctx=ctx)
+            source_type = upload_source(server, host, name, source, branch, ctx=ctx,
+                                        exclude=exclude, gitignore=gitignore)
 
         # Allocate port
         if port is None:
@@ -337,7 +353,8 @@ def deploy_command(
             host, garden_state, name, "command", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None, ctx=ctx,
+            extra={"meta": meta} if meta else None,
+            exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -359,6 +376,8 @@ def deploy_docker_compose(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> None:
     """Deploy a docker-compose app."""
     ctx = make_remote_context(server)
@@ -384,7 +403,7 @@ def deploy_docker_compose(
             source_type = "git"
             working_dir = f"{adir}/source"
         else:
-            upload_directory(server, source, adir)
+            upload_directory(server, source, adir, exclude=exclude, gitignore=gitignore)
             source_type = "local"
             working_dir = adir
 
@@ -423,7 +442,8 @@ def deploy_docker_compose(
             host, garden_state, name, "docker-compose", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None, ctx=ctx,
+            extra={"meta": meta} if meta else None,
+            exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -447,6 +467,8 @@ def deploy_dockerfile(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> None:
     """Deploy an app from a Dockerfile."""
     ctx = make_remote_context(server)
@@ -456,7 +478,8 @@ def deploy_dockerfile(
     with ssh_connect(server) as host:
         # Upload source
         console.print("  [dim]Uploading source...[/dim]")
-        source_type = upload_source(server, host, name, source, branch, ctx=ctx)
+        source_type = upload_source(server, host, name, source, branch, ctx=ctx,
+                                    exclude=exclude, gitignore=gitignore)
         source_path = _source_dir(name, ctx)
         adir = _app_dir(name, ctx)
 
@@ -520,7 +543,8 @@ def deploy_dockerfile(
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None, ctx=ctx,
+            extra={"meta": meta} if meta else None,
+            exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

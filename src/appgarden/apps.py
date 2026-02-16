@@ -257,7 +257,9 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
             run_remote_command(host, f"cd {shlex.quote(source_path)} && git pull", timeout=120)
     elif source_type == "local" and source:
         console.print("  [dim]Re-uploading source...[/dim]")
-        upload_directory(server, source, source_path)
+        exclude = entry.get("exclude")
+        gitignore = entry.get("gitignore", True)
+        upload_directory(server, source, source_path, exclude=exclude, gitignore=gitignore)
 
     # 2. Rebuild Docker image if applicable
     if method in ("dockerfile", "auto"):

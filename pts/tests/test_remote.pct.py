@@ -597,3 +597,60 @@ def test_privileged_journalctl_nonroot():
     assert "journalctl" in cmd
     assert "--lines 25" in cmd
     assert PRIVILEGED_HELPER_PATH in cmd
+
+# %% [markdown]
+# ## upload_directory exclude/gitignore
+
+# %%
+#|export
+from appgarden.remote import upload_directory
+import subprocess as _subprocess
+
+def test_upload_directory_gitignore_default():
+    """upload_directory includes --filter ':- .gitignore' by default."""
+    server = ServerConfig(ssh_user="root", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    with patch.object(_subprocess, "run") as mock_run:
+        upload_directory(server, "/tmp/src", "/srv/appgarden/apps/myapp/source")
+    cmd = mock_run.call_args[0][0]
+    assert "--filter" in cmd
+    idx = cmd.index("--filter")
+    assert cmd[idx + 1] == ":- .gitignore"
+
+# %%
+#|export
+def test_upload_directory_no_gitignore():
+    """upload_directory omits .gitignore filter when gitignore=False."""
+    server = ServerConfig(ssh_user="root", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    with patch.object(_subprocess, "run") as mock_run:
+        upload_directory(server, "/tmp/src", "/srv/appgarden/apps/myapp/source", gitignore=False)
+    cmd = mock_run.call_args[0][0]
+    assert "--filter" not in cmd
+
+# %%
+#|export
+def test_upload_directory_exclude_patterns():
+    """upload_directory adds --exclude flags for each pattern."""
+    server = ServerConfig(ssh_user="root", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    with patch.object(_subprocess, "run") as mock_run:
+        upload_directory(server, "/tmp/src", "/srv/appgarden/apps/myapp/source",
+                         exclude=["node_modules", ".env"], gitignore=False)
+    cmd = mock_run.call_args[0][0]
+    # Find all --exclude flags
+    excludes = []
+    for i, arg in enumerate(cmd):
+        if arg == "--exclude" and i + 1 < len(cmd):
+            excludes.append(cmd[i + 1])
+    assert excludes == ["node_modules", ".env"]
+
+# %%
+#|export
+def test_upload_directory_exclude_and_gitignore():
+    """upload_directory with both gitignore and excludes places filter before excludes."""
+    server = ServerConfig(ssh_user="root", ssh_key="~/.ssh/id_rsa", domain="example.com", host="1.2.3.4")
+    with patch.object(_subprocess, "run") as mock_run:
+        upload_directory(server, "/tmp/src", "/srv/appgarden/apps/myapp/source",
+                         exclude=[".venv"], gitignore=True)
+    cmd = mock_run.call_args[0][0]
+    filter_idx = cmd.index("--filter")
+    exclude_idx = cmd.index("--exclude")
+    assert filter_idx < exclude_idx, "gitignore filter should come before exclude patterns"

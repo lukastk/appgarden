@@ -482,3 +482,37 @@ def test_deploy_command_with_meta():
     garden_files = [p for p in written if "garden.json" in p]
     garden = json.loads(written[garden_files[0]])
     assert garden["apps"]["myapp"]["meta"] == {"visibility": "internal"}
+
+# %% [markdown]
+# ## Exclude/gitignore flows through deploy
+
+# %%
+#|export
+def test_deploy_static_with_exclude():
+    """deploy_static passes exclude/gitignore to rsync and stores in garden.json."""
+    host = _mock_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory") as mock_upload:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_static(
+            _make_server(), "mysite", "/tmp/site",
+            "mysite.apps.example.com",
+            exclude=["node_modules", ".env"],
+            gitignore=False,
+        )
+
+    # upload_directory should have been called with exclude and gitignore
+    mock_upload.assert_called_once()
+    call_kwargs = mock_upload.call_args
+    assert call_kwargs.kwargs.get("exclude") == ["node_modules", ".env"]
+    assert call_kwargs.kwargs.get("gitignore") is False
+
+    # garden.json should have exclude and gitignore stored
+    written = _get_written_files(host)
+    garden_files = [p for p in written if "garden.json" in p]
+    garden = json.loads(written[garden_files[0]])
+    assert garden["apps"]["mysite"]["exclude"] == ["node_modules", ".env"]
+    assert garden["apps"]["mysite"]["gitignore"] is False

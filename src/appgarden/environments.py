@@ -29,6 +29,8 @@ class EnvironmentConfig:
     env: dict[str, str] = field(default_factory=dict)
     env_file: str | None = None
     meta: dict = field(default_factory=dict)
+    exclude: list[str] = field(default_factory=list)
+    gitignore: bool = True
 
 # %% pts/appgarden/08_environments.pct.py 6
 @dataclass
@@ -114,9 +116,19 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
     env_meta = env_data.get("meta", {})
     merged_meta = {**app_meta, **env_meta}
 
+    # For exclude, concatenate and deduplicate (preserving order)
+    app_exclude = merged.pop("exclude", [])
+    env_exclude = env_data.get("exclude", [])
+    seen: set[str] = set()
+    merged_exclude: list[str] = []
+    for pat in list(app_exclude) + list(env_exclude):
+        if pat not in seen:
+            seen.add(pat)
+            merged_exclude.append(pat)
+
     # Overlay all other env-specific keys
     for k, v in env_data.items():
-        if k not in ("env", "meta"):
+        if k not in ("env", "meta", "exclude"):
             merged[k] = v
 
     app_name = derive_app_name(config.app_name, env_name)
@@ -156,6 +168,8 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         env=merged_env,
         env_file=merged.get("env_file"),
         meta=merged_meta,
+        exclude=merged_exclude,
+        gitignore=merged.get("gitignore", True),
     )
 
 # %% pts/appgarden/08_environments.pct.py 14

@@ -310,7 +310,20 @@ def _resolve_deploy_params(
     result = dict(DEPLOY_DEFAULTS)
     for layer in [global_defaults, project_defaults, env_cfg, cli]:
         if layer:
-            result.update({k: v for k, v in layer.items() if v is not None})
+            result.update({k: v for k, v in layer.items() if v is not None and k != "exclude"})
+
+    # Concatenate exclude lists across layers (deduped, preserving order)
+    seen: set[str] = set()
+    merged_exclude: list[str] = []
+    for layer in [global_defaults, project_defaults, env_cfg, cli]:
+        if layer and layer.get("exclude"):
+            for pat in layer["exclude"]:
+                if pat not in seen:
+                    seen.add(pat)
+                    merged_exclude.append(pat)
+    if merged_exclude:
+        result["exclude"] = merged_exclude
+
     return result
 
 # %% pts/appgarden/10_cli.pct.py 27
@@ -321,27 +334,31 @@ def _dispatch_deploy(
     setup_cmd: str | None = None, branch: str | None = None,
     env_vars: dict[str, str] | None = None, env_file: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None, gitignore: bool = True,
 ) -> None:
     """Dispatch to the appropriate deploy function based on method."""
     if method == "static":
         if not source:
             console.print("[red]Error:[/red] --source is required for static deployments")
             raise typer.Exit(code=1)
-        deploy_static(srv, name, source, url, branch=branch, meta=meta)
+        deploy_static(srv, name, source, url, branch=branch, meta=meta,
+                       exclude=exclude, gitignore=gitignore)
 
     elif method == "command":
         if not cmd:
             console.print("[red]Error:[/red] --cmd is required for command deployments")
             raise typer.Exit(code=1)
         deploy_command(srv, name, cmd, url, port=port, source=source,
-                       branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
+                       branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                       exclude=exclude, gitignore=gitignore)
 
     elif method == "docker-compose":
         if not source:
             console.print("[red]Error:[/red] --source is required for docker-compose deployments")
             raise typer.Exit(code=1)
         deploy_docker_compose(srv, name, source, url, port=port,
-                              branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
+                              branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                              exclude=exclude, gitignore=gitignore)
 
     elif method == "dockerfile":
         if not source:
@@ -349,7 +366,8 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_dockerfile(srv, name, source, url, port=port,
                           container_port=container_port, branch=branch,
-                          env_vars=env_vars, env_file=env_file, meta=meta)
+                          env_vars=env_vars, env_file=env_file, meta=meta,
+                          exclude=exclude, gitignore=gitignore)
 
     elif method == "auto":
         if not source:
@@ -360,7 +378,8 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_auto(srv, name, source, cmd, url, port=port,
                     container_port=container_port, setup_cmd=setup_cmd,
-                    branch=branch, env_vars=env_vars, env_file=env_file, meta=meta)
+                    branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                    exclude=exclude, gitignore=gitignore)
 
     else:
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
@@ -380,6 +399,10 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
         d["env"] = dict(env_cfg.env)
     if env_cfg.meta:
         d["meta"] = dict(env_cfg.meta)
+    if env_cfg.exclude:
+        d["exclude"] = list(env_cfg.exclude)
+    if not env_cfg.gitignore:
+        d["gitignore"] = False
     return d
 
 def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> None:
@@ -431,6 +454,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         branch=params.get("branch"),
         env_vars=params.get("env"), env_file=params.get("env_file"),
         meta=params.get("meta"),
+        exclude=params.get("exclude"), gitignore=params.get("gitignore", True),
     )
 
 # %% pts/appgarden/10_cli.pct.py 29
@@ -452,6 +476,8 @@ def deploy(
     env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
     env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
     meta: Optional[list[str]] = typer.Option(None, "--meta", help="Metadata (KEY=VALUE, repeatable)"),
+    exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Rsync exclude pattern (repeatable)"),
+    no_gitignore: bool = typer.Option(False, "--no-gitignore", help="Don't filter uploads using .gitignore"),
     all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
     project_path: Optional[str] = typer.Option(None, "--project", "-P", help="Path to appgarden.toml or directory containing it"),
 ):
@@ -477,6 +503,10 @@ def deploy(
     meta_dict = _parse_meta_list(meta)
     if meta_dict:
         cli_flags["meta"] = meta_dict
+    if exclude:
+        cli_flags["exclude"] = list(exclude)
+    if no_gitignore:
+        cli_flags["gitignore"] = False
 
     global_defaults = cfg.defaults or None
 

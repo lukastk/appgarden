@@ -126,6 +126,8 @@ def deploy_auto(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     meta: dict | None = None,
+    exclude: list[str] | None = None,
+    gitignore: bool = True,
 ) -> None:
     """Auto-detect runtime, generate Dockerfile, build and deploy."""
     ctx = make_remote_context(server)
@@ -135,7 +137,8 @@ def deploy_auto(
     with ssh_connect(server) as host:
         # Upload source
         console.print("  [dim]Uploading source...[/dim]")
-        source_type = upload_source(server, host, name, source, branch, ctx=ctx)
+        source_type = upload_source(server, host, name, source, branch, ctx=ctx,
+                                    exclude=exclude, gitignore=gitignore)
         source_path = _source_dir(name, ctx)
         adir = _app_dir(name, ctx)
 
@@ -230,7 +233,7 @@ def deploy_auto(
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra=extra, ctx=ctx,
+            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")

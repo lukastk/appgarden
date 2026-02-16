@@ -456,11 +456,19 @@ def write_ports_state(host, state: dict, ctx: RemoteContext | None = None) -> No
 
 # %%
 #|export
-def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: str) -> None:
+def upload_directory(
+    server: ServerConfig, local_path: str | Path, remote_path: str,
+    exclude: list[str] | None = None, gitignore: bool = True,
+) -> None:
     """Upload a local directory to the remote server using rsync.
 
     Uses the SSH agent when available (needed for encrypted keys).
     Falls back to specifying the key file directly.
+
+    Parameters:
+        exclude: Additional rsync exclude patterns.
+        gitignore: If True (default), add ``--filter ':- .gitignore'`` so
+            rsync honours .gitignore files in the source tree.
     """
     import subprocess
     import os
@@ -475,8 +483,16 @@ def upload_directory(server: ServerConfig, local_path: str | Path, remote_path: 
     # Still pass -i so the agent knows which key to offer.
     ssh_opts = f"ssh -o StrictHostKeyChecking=accept-new -i {shlex.quote(ssh_key)}"
 
+    extra_flags: list[str] = []
+    if gitignore:
+        extra_flags += ["--filter", ":- .gitignore"]
+    if exclude:
+        for pattern in exclude:
+            extra_flags += ["--exclude", pattern]
+
     cmd = [
         "rsync", "-az", "--delete",
+        *extra_flags,
         "-e", ssh_opts,
         local,
         f"{server.ssh_user}@{host_addr}:{remote_path}/",

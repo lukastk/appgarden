@@ -627,3 +627,106 @@ def test_env_config_to_dict_excludes_empty_meta():
     )
     d = _env_config_to_dict(env)
     assert "meta" not in d
+
+# %% [markdown]
+# ## Exclude list merging
+
+# %%
+#|export
+def test_resolve_exclude_from_app_defaults(tmp_path):
+    """App-level exclude is inherited by environments."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+exclude = ["node_modules", ".git"]
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.exclude == ["node_modules", ".git"]
+
+# %%
+#|export
+def test_resolve_exclude_concatenation(tmp_path):
+    """Environment exclude is concatenated with app-level exclude."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+exclude = ["node_modules"]
+
+[environments.production]
+url = "myapp.example.com"
+exclude = [".env", "dist"]
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.exclude == ["node_modules", ".env", "dist"]
+
+# %%
+#|export
+def test_resolve_exclude_dedup(tmp_path):
+    """Duplicate exclude patterns are removed (preserving order)."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+exclude = ["node_modules", ".env"]
+
+[environments.production]
+url = "myapp.example.com"
+exclude = [".env", "dist"]
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.exclude == ["node_modules", ".env", "dist"]
+
+# %%
+#|export
+def test_resolve_gitignore_override(tmp_path):
+    """Environment can set gitignore = false."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+
+[environments.production]
+url = "myapp.example.com"
+gitignore = false
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.gitignore is False
+
+# %%
+#|export
+def test_env_config_to_dict_includes_exclude():
+    """_env_config_to_dict includes non-empty exclude and gitignore=False."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+        exclude=["node_modules", ".env"],
+        gitignore=False,
+    )
+    d = _env_config_to_dict(env)
+    assert d["exclude"] == ["node_modules", ".env"]
+    assert d["gitignore"] is False
+
+# %%
+#|export
+def test_env_config_to_dict_omits_default_gitignore():
+    """_env_config_to_dict omits gitignore when it's True (default)."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="dockerfile", url="myapp.example.com",
+    )
+    d = _env_config_to_dict(env)
+    assert "gitignore" not in d
+    assert "exclude" not in d
