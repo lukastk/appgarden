@@ -57,6 +57,7 @@ class EnvironmentConfig:
 class ProjectConfig:
     """Parsed appgarden.toml project configuration."""
     app_name: str
+    app_slug: str | None = None
     app_defaults: dict = field(default_factory=dict)
     environments: dict[str, dict] = field(default_factory=dict)
 
@@ -81,6 +82,7 @@ def load_project_config(path: str | Path = ".") -> ProjectConfig:
     app_name = app_section.get("name")
     if not app_name:
         raise ValueError("appgarden.toml must have [app] name")
+    app_slug = app_section.get("slug")
 
     environments = {}
     for env_name, env_data in data.get("environments", {}).items():
@@ -88,7 +90,8 @@ def load_project_config(path: str | Path = ".") -> ProjectConfig:
 
     return ProjectConfig(
         app_name=app_name,
-        app_defaults={k: v for k, v in app_section.items() if k != "name"},
+        app_slug=app_slug,
+        app_defaults={k: v for k, v in app_section.items() if k not in ("name", "slug")},
         environments=environments,
     )
 
@@ -140,6 +143,23 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
             merged[k] = v
 
     app_name = derive_app_name(config.app_name, env_name)
+
+    # Interpolate placeholders in string values
+    # {app.slug} falls back to {app.name} when slug is not set
+    placeholders = {
+        "app.name": config.app_name,
+        "app.slug": config.app_slug or config.app_name,
+        "env.name": env_name,
+    }
+    for k, v in merged.items():
+        if isinstance(v, str):
+            for ph, val in placeholders.items():
+                v = v.replace("{" + ph + "}", val)
+            merged[k] = v
+    for k, v in merged_env.items():
+        for ph, val in placeholders.items():
+            v = v.replace("{" + ph + "}", val)
+        merged_env[k] = v
 
     return EnvironmentConfig(
         name=env_name,

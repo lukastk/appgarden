@@ -459,12 +459,14 @@ def deploy(
     env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
     env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
     all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
+    project_path: Optional[str] = typer.Option(None, "--project", "-P", help="Path to appgarden.toml or directory containing it"),
 ):
     """Deploy an application to a remote server.
 
-    If an appgarden.toml exists in the current directory, NAME can be an
-    environment name (e.g. 'production', 'staging'). Use --all-envs to
-    deploy all environments at once.
+    If an appgarden.toml exists in the current directory (or the path
+    given by --project), NAME can be an environment name (e.g.
+    'production', 'staging'). Use --all-envs to deploy all environments
+    at once.
     """
     cfg = load_config()
 
@@ -482,25 +484,50 @@ def deploy(
 
     global_defaults = cfg.defaults or None
 
+    # Resolve --project path: file -> parent dir, dir -> as-is, default -> "."
+    _project_dir = "."
+    if project_path:
+        from pathlib import Path as _Path
+        pp = _Path(project_path)
+        if pp.is_file():
+            _project_dir = str(pp.parent)
+        else:
+            _project_dir = project_path
+
     # Try loading project config
     project = None
     try:
-        project = load_project_config()
+        project = load_project_config(_project_dir)
     except FileNotFoundError:
         pass
 
     project_defaults = project.app_defaults if project else None
 
+    # Resolve relative local paths (source, env_file) against the project dir
+    def _resolve_local_paths(params: dict) -> dict:
+        from appgarden.deploy import is_git_url
+        from pathlib import Path as _P
+        project_dir = _P(_project_dir).resolve()
+        src = params.get("source")
+        if src and not is_git_url(src):
+            resolved = (project_dir / src).resolve()
+            params["source"] = str(resolved)
+        ef = params.get("env_file")
+        if ef:
+            resolved = (project_dir / ef).resolve()
+            params["env_file"] = str(resolved)
+        return params
+
     # --all-envs: deploy every environment with cascading
     if all_envs:
         if not project:
-            console.print("[red]Error:[/red] No appgarden.toml found in current directory")
+            console.print(f"[red]Error:[/red] No appgarden.toml found in {_Path(_project_dir).resolve() if project_path else 'current directory'}")
             raise typer.Exit(code=1)
         for env_name in sorted(project.environments.keys()):
             resolved_env = resolve_environment(project, env_name)
             env_overrides = _env_config_to_dict(resolved_env)
             params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
-            _deploy_from_params(cfg, params, resolved_env.app_name)
+            _deploy_from_params(cfg, _resolve_local_paths(params), resolved_env.app_name)
         return
 
     # Check if name matches an environment
@@ -513,7 +540,7 @@ def deploy(
 
     params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
 
-    _deploy_from_params(cfg, params, app_name)
+    _deploy_from_params(cfg, _resolve_local_paths(params), app_name)
 
 # %% [markdown]
 # ## Apps subcommand group

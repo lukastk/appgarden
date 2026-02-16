@@ -334,3 +334,197 @@ subdomain = "myapp"
     assert params["subdomain"] == "myapp"
     assert params["method"] == "dockerfile"
     assert params["source"] == "."
+
+# %% [markdown]
+# ## load_project_config with explicit path
+
+# %%
+#|export
+def test_load_project_config_explicit_dir(tmp_path):
+    """load_project_config works when given an explicit directory path."""
+    subdir = tmp_path / "myproject"
+    subdir.mkdir()
+    (subdir / "appgarden.toml").write_text(SAMPLE_TOML)
+    cfg = load_project_config(subdir)
+    assert cfg.app_name == "mywebsite"
+    assert "production" in cfg.environments
+
+# %%
+#|export
+def test_load_project_config_explicit_file_path(tmp_path):
+    """load_project_config works when given a path to the toml file itself (parent dir used)."""
+    (tmp_path / "appgarden.toml").write_text(SAMPLE_TOML)
+    # Passing the file path directly should work via parent resolution in CLI,
+    # but load_project_config expects a directory — verify that directly.
+    from pathlib import Path
+    file_path = tmp_path / "appgarden.toml"
+    cfg = load_project_config(file_path.parent)
+    assert cfg.app_name == "mywebsite"
+    assert len(cfg.environments) == 3
+
+# %% [markdown]
+# ## Placeholder interpolation
+
+# %%
+#|export
+def test_placeholder_app_name_in_subdomain(tmp_path):
+    """'{app.name}' in subdomain is replaced with the app name."""
+    toml = """\
+[app]
+name = "test-app"
+method = "dockerfile"
+
+[environments.production]
+subdomain = "{app.name}"
+
+[environments.dev]
+subdomain = "{app.name}-dev"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+
+    prod = resolve_environment(cfg, "production")
+    assert prod.subdomain == "test-app"
+
+    dev = resolve_environment(cfg, "dev")
+    assert dev.subdomain == "test-app-dev"
+
+# %%
+#|export
+def test_placeholder_env_name(tmp_path):
+    """'{env.name}' is replaced with the environment name."""
+    toml = """\
+[app]
+name = "myapp"
+method = "command"
+
+[environments.staging]
+url = "myapp-{env.name}.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "staging")
+    assert env.url == "myapp-staging.example.com"
+
+# %%
+#|export
+def test_placeholder_in_env_vars(tmp_path):
+    """Placeholders work in environment variable values."""
+    toml = """\
+[app]
+name = "myapp"
+method = "command"
+
+[environments.production]
+url = "myapp.example.com"
+env = { APP_NAME = "{app.name}", DEPLOY_ENV = "{env.name}" }
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.env["APP_NAME"] == "myapp"
+    assert env.env["DEPLOY_ENV"] == "production"
+
+# %%
+#|export
+def test_placeholder_in_app_defaults(tmp_path):
+    """Placeholders in [app]-level defaults are interpolated per environment."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+subdomain = "{app.name}-{env.name}"
+
+[environments.production]
+server = "myserver"
+
+[environments.staging]
+server = "myserver"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+
+    prod = resolve_environment(cfg, "production")
+    assert prod.subdomain == "myapp-production"
+
+    staging = resolve_environment(cfg, "staging")
+    assert staging.subdomain == "myapp-staging"
+
+# %%
+#|export
+def test_no_placeholder_passthrough(tmp_path):
+    """Strings without placeholders are left unchanged."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+
+[environments.production]
+subdomain = "literal-value"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.subdomain == "literal-value"
+
+# %%
+#|export
+def test_placeholder_app_slug(tmp_path):
+    """'{app.slug}' is replaced with the slug value."""
+    toml = """\
+[app]
+name = "My Cool App"
+slug = "my-cool-app"
+method = "dockerfile"
+
+[environments.production]
+subdomain = "{app.slug}"
+
+[environments.dev]
+subdomain = "{app.slug}-dev"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    assert cfg.app_slug == "my-cool-app"
+
+    prod = resolve_environment(cfg, "production")
+    assert prod.subdomain == "my-cool-app"
+
+    dev = resolve_environment(cfg, "dev")
+    assert dev.subdomain == "my-cool-app-dev"
+
+# %%
+#|export
+def test_placeholder_app_slug_fallback(tmp_path):
+    """'{app.slug}' falls back to app name when slug is not set."""
+    toml = """\
+[app]
+name = "myapp"
+method = "dockerfile"
+
+[environments.production]
+subdomain = "{app.slug}"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    assert cfg.app_slug is None
+
+    env = resolve_environment(cfg, "production")
+    assert env.subdomain == "myapp"
+
+# %%
+#|export
+def test_slug_not_in_app_defaults(tmp_path):
+    """slug is not passed through as an app default."""
+    toml = """\
+[app]
+name = "myapp"
+slug = "my-app"
+method = "dockerfile"
+
+[environments.production]
+subdomain = "prod"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    assert "slug" not in cfg.app_defaults
