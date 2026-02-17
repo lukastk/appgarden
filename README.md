@@ -211,6 +211,12 @@ appgarden deploy myapp --method dockerfile \
 
 Environment files are stored on the server with `600` permissions (readable only by root).
 
+All three sources can be combined. When duplicate keys exist, the precedence order is:
+
+1. `env_file` (base — loaded first)
+2. `appgarden.toml` `env` (overrides file)
+3. CLI `--env` flags (highest priority)
+
 ## App Metadata
 
 Attach arbitrary key-value metadata to apps for organization and tracking:
@@ -297,7 +303,7 @@ container_port = 3000       # Container port (for dockerfile/auto methods). Defa
 cmd = "npm start"           # Start command (for command/auto methods).
 setup_cmd = "npm ci"        # Setup/install command (for auto method).
 branch = "main"             # Git branch (for git sources).
-env_file = ".env.production"  # Path to .env file (relative to project directory).
+env_file = ".env.production"  # Path to .env file (relative to project dir). Overridden by env/--env.
 gitignore = true            # Filter uploads using .gitignore (default: true).
 
 # Dict fields — merged (env-level overrides app-level keys):
