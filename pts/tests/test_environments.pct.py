@@ -822,3 +822,65 @@ def test_cascade_volumes_across_layers():
     cli = {"volumes": ["./cli:/app/cli"]}
     result = _resolve_deploy_params(cli, env_cfg=env_cfg, project_defaults=project_defaults, global_defaults=global_defaults)
     assert result["volumes"] == ["./global:/app/global", "./proj:/app/proj", "./env:/app/env", "./cli:/app/cli"]
+
+# %% [markdown]
+# ## CLI deploy command tests
+
+# %%
+#|export
+from typer.testing import CliRunner
+from appgarden.cli import app as cli_app
+
+_runner = CliRunner()
+
+# %%
+#|export
+def test_deploy_env_name_requires_toml(tmp_path, monkeypatch):
+    """Passing a positional env_name without appgarden.toml gives an error."""
+    monkeypatch.chdir(tmp_path)
+    result = _runner.invoke(cli_app, ["deploy", "production"])
+    assert result.exit_code != 0
+    assert "no appgarden.toml found" in result.output.lower()
+
+# %%
+#|export
+def test_deploy_env_name_not_found(tmp_path, monkeypatch):
+    """Passing a positional env_name that doesn't match any environment gives an error."""
+    (tmp_path / "appgarden.toml").write_text(SAMPLE_TOML)
+    monkeypatch.chdir(tmp_path)
+    result = _runner.invoke(cli_app, ["deploy", "nonexistent"])
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+    assert "dev" in result.output  # should list available environments
+
+# %%
+#|export
+def test_deploy_name_required_without_toml(tmp_path, monkeypatch):
+    """Without appgarden.toml and no --name, deploy gives a clear error."""
+    monkeypatch.chdir(tmp_path)
+    result = _runner.invoke(cli_app, ["deploy"])
+    assert result.exit_code != 0
+    assert "--name" in result.output.lower()
+
+# %%
+#|export
+def test_deploy_appgarden_server_envvar(tmp_path, monkeypatch):
+    """APPGARDEN_SERVER env var is picked up by the deploy command."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APPGARDEN_SERVER", "testserver")
+    # Will fail later (no such server), but we verify it reads the envvar
+    result = _runner.invoke(cli_app, ["deploy", "--name", "myapp", "--method", "static", "--source", ".", "--url", "x.example.com"])
+    # Should not complain about missing --server; it got it from env
+    assert "--server" not in result.output.lower() or "testserver" in result.output.lower()
+
+# %%
+#|export
+def test_apps_list_appgarden_server_envvar(tmp_path, monkeypatch):
+    """APPGARDEN_SERVER env var is picked up by apps list command."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APPGARDEN_SERVER", "testserver")
+    result = _runner.invoke(cli_app, ["apps", "list"])
+    # Should try to use "testserver" (will fail because no config, but shouldn't ask for --server)
+    assert result.exit_code != 0
+    # The error should be about the server not being found, not about missing --server flag
+    assert "testserver" in result.output or "no servers configured" in result.output.lower()

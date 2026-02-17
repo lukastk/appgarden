@@ -537,33 +537,36 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
 #|export
 @app.command()
 def deploy(
-    name: Optional[str] = typer.Argument(None, help="App name or environment name (deploys all envs if omitted with a project)"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
-    method: Optional[str] = typer.Option(None, "--method", "-m", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
-    source: Optional[str] = typer.Option(None, "--source", help="Source path or git URL"),
-    url: Optional[str] = typer.Option(None, "--url", help="Full URL for the app (e.g. myapp.example.com)"),
-    subdomain: Optional[str] = typer.Option(None, "--subdomain", help="Subdomain (combined with --domain or server domain)"),
-    path: Optional[str] = typer.Option(None, "--path", help="Path prefix (combined with --domain or server domain)"),
-    domain: Optional[str] = typer.Option(None, "--domain", "-d", help="Base domain (overrides server domain for --subdomain/--path)"),
-    port: Optional[int] = typer.Option(None, "--port", "-p", help="Host port (auto-allocated if omitted)"),
-    container_port: Optional[int] = typer.Option(None, "--container-port", help="Container port (for dockerfile/auto methods)"),
-    cmd: Optional[str] = typer.Option(None, "--cmd", help="Start command (for command/auto methods)"),
-    setup_cmd: Optional[str] = typer.Option(None, "--setup-cmd", help="Setup/install command (for auto method)"),
-    branch: Optional[str] = typer.Option(None, "--branch", help="Git branch (for git sources)"),
-    env: Optional[list[str]] = typer.Option(None, "--env", help="Environment variable (KEY=VALUE, repeatable)"),
-    env_file: Optional[str] = typer.Option(None, "--env-file", help="Path to .env file"),
+    env_name: Optional[str] = typer.Argument(None, help="Environment name from appgarden.toml"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", envvar="APPGARDEN_NAME", help="App name (for ad-hoc deploys without appgarden.toml)"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", envvar="APPGARDEN_METHOD", help="Deployment method (static, command, docker-compose, dockerfile, auto)"),
+    source: Optional[str] = typer.Option(None, "--source", envvar="APPGARDEN_SOURCE", help="Source path or git URL"),
+    url: Optional[str] = typer.Option(None, "--url", envvar="APPGARDEN_URL", help="Full URL for the app (e.g. myapp.example.com)"),
+    subdomain: Optional[str] = typer.Option(None, "--subdomain", envvar="APPGARDEN_SUBDOMAIN", help="Subdomain (combined with --domain or server domain)"),
+    path: Optional[str] = typer.Option(None, "--path", envvar="APPGARDEN_PATH", help="Path prefix (combined with --domain or server domain)"),
+    domain: Optional[str] = typer.Option(None, "--domain", "-d", envvar="APPGARDEN_DOMAIN", help="Base domain (overrides server domain for --subdomain/--path)"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", envvar="APPGARDEN_PORT", help="Host port (auto-allocated if omitted)"),
+    container_port: Optional[int] = typer.Option(None, "--container-port", envvar="APPGARDEN_CONTAINER_PORT", help="Container port (for dockerfile/auto methods)"),
+    cmd: Optional[str] = typer.Option(None, "--cmd", envvar="APPGARDEN_CMD", help="Start command (for command/auto methods)"),
+    setup_cmd: Optional[str] = typer.Option(None, "--setup-cmd", envvar="APPGARDEN_SETUP_CMD", help="Setup/install command (for auto method)"),
+    branch: Optional[str] = typer.Option(None, "--branch", envvar="APPGARDEN_BRANCH", help="Git branch (for git sources)"),
+    envvar: Optional[list[str]] = typer.Option(None, "--envvar", help="Environment variable (KEY=VALUE, repeatable)"),
+    envvar_file: Optional[str] = typer.Option(None, "--envvar-file", envvar="APPGARDEN_ENVVAR_FILE", help="Path to .env file"),
     meta: Optional[list[str]] = typer.Option(None, "--meta", help="Metadata (KEY=VALUE, repeatable)"),
     exclude: Optional[list[str]] = typer.Option(None, "--exclude", help="Rsync exclude pattern (repeatable)"),
     volume: Optional[list[str]] = typer.Option(None, "--volume", help="Volume mount (host:container[:opts], repeatable)"),
     no_gitignore: bool = typer.Option(False, "--no-gitignore", help="Don't filter uploads using .gitignore"),
-    all_envs: bool = typer.Option(False, "--all-envs", help="Deploy all environments from appgarden.toml"),
-    project_path: Optional[str] = typer.Option(None, "--project", "-P", help="Path to appgarden.toml or directory containing it"),
+    all_envs: bool = typer.Option(False, "--all-envs", envvar="APPGARDEN_ALL_ENVS", help="Deploy all environments from appgarden.toml"),
+    project_path: Optional[str] = typer.Option(None, "--project", "-P", envvar="APPGARDEN_PROJECT", help="Path to appgarden.toml or directory containing it"),
 ):
     """Deploy an application to a remote server.
 
-    If an appgarden.toml exists in the current directory (or the path
-    given by --project), NAME can be an environment name (e.g.
-    'production', 'staging'). Omit NAME to deploy all environments.
+    With an appgarden.toml: pass ENV_NAME to deploy a specific environment,
+    or omit it (or use --all-envs) to deploy all environments.
+
+    Without appgarden.toml: use --name to specify the app name and provide
+    method, source, url etc. via flags or APPGARDEN_* environment variables.
     """
     cfg = load_config()
 
@@ -573,9 +576,9 @@ def deploy(
         "url": url, "subdomain": subdomain, "path": path, "domain": domain,
         "port": port, "container_port": container_port,
         "cmd": cmd, "setup_cmd": setup_cmd, "branch": branch,
-        "env_file": env_file,
+        "env_file": envvar_file,
     }
-    env_vars = _parse_env_list(env)
+    env_vars = _parse_env_list(envvar)
     if env_vars:
         cli_flags["env"] = env_vars
     meta_dict = _parse_meta_list(meta)
@@ -626,32 +629,43 @@ def deploy(
             params["env_file"] = str(resolved)
         return params
 
-    # Deploy all environments: explicit --all-envs or name omitted with a project
-    if all_envs or (name is None and project and project.environments):
+    # Deploy all environments: explicit --all-envs or env_name omitted with a project
+    if all_envs or (env_name is None and name is None and project and project.environments):
         if not project:
             console.print(f"[red]Error:[/red] No appgarden.toml found in {_Path(_project_dir).resolve() if project_path else 'current directory'}")
             raise typer.Exit(code=1)
-        for env_name in sorted(project.environments.keys()):
-            resolved_env = resolve_environment(project, env_name)
+        for ename in sorted(project.environments.keys()):
+            resolved_env = resolve_environment(project, ename)
             env_overrides = _env_config_to_dict(resolved_env)
             params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
             _deploy_from_params(cfg, _resolve_local_paths(params), resolved_env.app_name)
         return
 
-    if name is None:
-        console.print("[red]Error:[/red] NAME is required (or use --project with an appgarden.toml that defines environments)")
-        raise typer.Exit(code=1)
-
-    # Check if name matches an environment
-    env_overrides = None
-    app_name = name
-    if project and name in project.environments:
-        resolved_env = resolve_environment(project, name)
+    # Environment-based deploy (positional arg)
+    if env_name is not None:
+        if not project:
+            console.print("[red]Error:[/red] Environment name provided but no appgarden.toml found")
+            raise typer.Exit(code=1)
+        if env_name not in project.environments:
+            available = ", ".join(sorted(project.environments.keys()))
+            console.print(f"[red]Error:[/red] Environment '{env_name}' not found. Available: {available}")
+            raise typer.Exit(code=1)
+        resolved_env = resolve_environment(project, env_name)
         env_overrides = _env_config_to_dict(resolved_env)
         app_name = resolved_env.app_name
+        params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
+        _deploy_from_params(cfg, _resolve_local_paths(params), app_name)
+        return
 
-    params = _resolve_deploy_params(cli_flags, env_overrides, project_defaults, global_defaults)
-
+    # Ad-hoc deploy (--name flag required)
+    app_name = name
+    if not app_name:
+        if project and project.app_name:
+            app_name = project.app_name
+        else:
+            console.print("[red]Error:[/red] --name is required for ad-hoc deploys (no environment specified)")
+            raise typer.Exit(code=1)
+    params = _resolve_deploy_params(cli_flags, env_cfg=None, project_defaults=project_defaults, global_defaults=global_defaults)
     _deploy_from_params(cfg, _resolve_local_paths(params), app_name)
 
 # %% [markdown]
@@ -673,7 +687,7 @@ app.add_typer(apps_app, name="apps")
 #|export
 @apps_app.command("list")
 def apps_list(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """List all deployed applications."""
     cfg = load_config()
@@ -710,7 +724,7 @@ def apps_list(
 @apps_app.command("status")
 def apps_status(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Show detailed status for an app."""
     validate_app_name(name)
@@ -760,7 +774,7 @@ def apps_status(
 @apps_app.command("stop")
 def apps_stop(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Stop an app."""
     validate_app_name(name)
@@ -781,7 +795,7 @@ def apps_stop(
 @apps_app.command("start")
 def apps_start(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Start an app."""
     validate_app_name(name)
@@ -802,7 +816,7 @@ def apps_start(
 @apps_app.command("restart")
 def apps_restart(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Restart an app."""
     validate_app_name(name)
@@ -826,7 +840,7 @@ def apps_restart(
 @apps_app.command("logs")
 def apps_logs(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
     lines: int = typer.Option(50, "--lines", "-n", help="Number of log lines"),
 ):
     """Show logs for an app."""
@@ -851,7 +865,7 @@ def apps_logs(
 @apps_app.command("remove")
 def apps_remove(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
     keep_data: bool = typer.Option(False, "--keep-data", help="Preserve the data/ directory"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
@@ -887,7 +901,7 @@ def apps_remove(
 @apps_app.command("redeploy")
 def apps_redeploy(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Redeploy an app (update source, rebuild, restart)."""
     validate_app_name(name)
@@ -925,7 +939,7 @@ apps_app.add_typer(meta_app, name="meta")
 @meta_app.command("get")
 def meta_get(
     name: str = typer.Argument(help="App name"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Show metadata for an app."""
     validate_app_name(name)
@@ -956,7 +970,7 @@ def meta_get(
 def meta_set(
     name: str = typer.Argument(help="App name"),
     meta: list[str] = typer.Option(..., "--meta", help="Metadata (KEY=VALUE, repeatable)"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Set or update metadata keys for an app."""
     validate_app_name(name)
@@ -988,7 +1002,7 @@ def meta_set(
 def meta_replace(
     name: str = typer.Argument(help="App name"),
     json_str: str = typer.Option(..., "--json", help="JSON object to replace entire metadata"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Replace all metadata for an app with a JSON object."""
     validate_app_name(name)
@@ -1025,7 +1039,7 @@ def meta_replace(
 def meta_remove(
     name: str = typer.Argument(help="App name"),
     keys: list[str] = typer.Argument(help="Metadata keys to remove"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Remove specific metadata keys from an app."""
     validate_app_name(name)
@@ -1067,7 +1081,7 @@ app.add_typer(tunnel_app, name="tunnel")
 def tunnel_open(
     local_port: int = typer.Argument(help="Local port to expose"),
     url: str = typer.Option(..., "--url", help="Public URL for the tunnel"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Open a tunnel to expose a local port with HTTPS."""
     cfg = load_config()
@@ -1086,7 +1100,7 @@ def tunnel_open(
 #|export
 @tunnel_app.command("list")
 def tunnel_list(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """List active tunnels."""
     cfg = load_config()
@@ -1123,7 +1137,7 @@ def tunnel_list(
 @tunnel_app.command("close")
 def tunnel_close(
     tunnel_id: str = typer.Argument(help="Tunnel ID to close"),
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Close a tunnel and clean up resources."""
     cfg = load_config()
@@ -1143,7 +1157,7 @@ def tunnel_close(
 #|export
 @tunnel_app.command("cleanup")
 def tunnel_cleanup(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Server name"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Remove stale tunnels whose SSH connections are dead."""
     cfg = load_config()

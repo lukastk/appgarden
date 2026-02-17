@@ -51,27 +51,27 @@ This installs Docker, Caddy, configures UFW, SSH hardening, fail2ban, and sets u
 
 ```bash
 # Static site
-appgarden deploy mysite \
+appgarden deploy --name mysite \
   --method static \
   --source ./dist/ \
   --url mysite.apps.example.com
 
 # Docker app (auto-detects runtime)
-appgarden deploy myapp \
+appgarden deploy --name myapp \
   --method auto \
   --source ./my-project/ \
   --cmd "npm start" \
   --url myapp.apps.example.com
 
 # Dockerfile
-appgarden deploy myapp \
+appgarden deploy --name myapp \
   --method dockerfile \
   --source ./my-project/ \
   --container-port 8080 \
   --url myapp.apps.example.com
 
 # Bare command
-appgarden deploy myapi \
+appgarden deploy --name myapi \
   --method command \
   --cmd "python app.py" \
   --source ./api/ \
@@ -133,13 +133,13 @@ Any new subdomain deployed by AppGarden will automatically resolve to your serve
 ### Static Sites
 
 ```bash
-appgarden deploy docs --method static --source ./site/ --url docs.apps.example.com
+appgarden deploy --name docs --method static --source ./site/ --url docs.apps.example.com
 ```
 
 Supports git sources too:
 
 ```bash
-appgarden deploy docs --method static \
+appgarden deploy --name docs --method static \
   --source https://github.com/user/site.git \
   --branch gh-pages \
   --url docs.apps.example.com
@@ -150,17 +150,17 @@ appgarden deploy docs --method static \
 From a Dockerfile:
 
 ```bash
-appgarden deploy webapp --method dockerfile \
+appgarden deploy --name webapp --method dockerfile \
   --source ./app/ \
   --container-port 8080 \
   --url webapp.apps.example.com \
-  --env SECRET_KEY=abc123
+  --envvar SECRET_KEY=abc123
 ```
 
 From an existing docker-compose.yml:
 
 ```bash
-appgarden deploy stack --method docker-compose \
+appgarden deploy --name stack --method docker-compose \
   --source ./project/ \
   --url stack.apps.example.com
 ```
@@ -170,7 +170,7 @@ appgarden deploy stack --method docker-compose \
 Auto-detects runtime from project files (package.json, requirements.txt, go.mod, etc.), generates a Dockerfile, builds and deploys:
 
 ```bash
-appgarden deploy myapp --method auto \
+appgarden deploy --name myapp --method auto \
   --source ./project/ \
   --cmd "node server.js" \
   --url myapp.apps.example.com
@@ -183,7 +183,7 @@ Supported runtimes: Node.js, Python (pip), Python (pyproject.toml), Go, Ruby, Ru
 Run any process directly via systemd (no Docker):
 
 ```bash
-appgarden deploy api --method command \
+appgarden deploy --name api --method command \
   --cmd "python -m uvicorn main:app --host 0.0.0.0 --port \$PORT" \
   --source ./api/ \
   --url api.apps.example.com
@@ -193,20 +193,20 @@ The `PORT` environment variable is automatically set to the allocated port.
 
 ## Environment Variables
 
-Pass environment variables with `--env` (repeatable) or `--env-file`:
+Pass environment variables with `--envvar` (repeatable) or `--envvar-file`:
 
 ```bash
-appgarden deploy myapp --method dockerfile \
+appgarden deploy --name myapp --method dockerfile \
   --source . \
   --url myapp.apps.example.com \
-  --env DATABASE_URL=postgres://... \
-  --env SECRET_KEY=abc123
+  --envvar DATABASE_URL=postgres://... \
+  --envvar SECRET_KEY=abc123
 
 # Or from a file
-appgarden deploy myapp --method dockerfile \
+appgarden deploy --name myapp --method dockerfile \
   --source . \
   --url myapp.apps.example.com \
-  --env-file .env.production
+  --envvar-file .env.production
 ```
 
 Environment files are stored on the server with `600` permissions (readable only by root).
@@ -215,7 +215,7 @@ All three sources can be combined. When duplicate keys exist, the precedence ord
 
 1. `env_file` (base — loaded first)
 2. `appgarden.toml` `env` (overrides file)
-3. CLI `--env` flags (highest priority)
+3. CLI `--envvar` flags (highest priority)
 
 ## App Metadata
 
@@ -223,7 +223,7 @@ Attach arbitrary key-value metadata to apps for organization and tracking:
 
 ```bash
 # Set metadata during deploy
-appgarden deploy myapp --method dockerfile \
+appgarden deploy --name myapp --method dockerfile \
   --source . \
   --url myapp.apps.example.com \
   --meta team=backend \
@@ -336,11 +336,11 @@ env = { NODE_ENV = "staging" }
 Apps can be deployed to subdirectories instead of subdomains:
 
 ```bash
-appgarden deploy docs --method static \
+appgarden deploy --name docs --method static \
   --source ./docs/ \
   --url apps.example.com/docs
 
-appgarden deploy api --method command \
+appgarden deploy --name api --method command \
   --cmd "python app.py" \
   --source ./api/ \
   --url apps.example.com/api
@@ -403,7 +403,7 @@ appgarden server ping [name]
 ### Deployment
 
 ```bash
-appgarden deploy <name> --method <method> --url <url> [options]
+appgarden deploy --name <name> --method <method> --url <url> [options]
 appgarden deploy <env-name>           # From appgarden.toml
 appgarden deploy --all-envs           # All environments
 ```
@@ -445,6 +445,31 @@ appgarden tunnel cleanup [-s server]
 appgarden config show
 appgarden version
 ```
+
+### APPGARDEN_* Environment Variables
+
+Most deploy options and the `--server` flag on all commands can be set via environment variables. This is useful for CI/CD pipelines.
+
+| Variable | Equivalent flag | Applies to |
+|----------|----------------|------------|
+| `APPGARDEN_SERVER` | `--server` | All commands with `--server` |
+| `APPGARDEN_NAME` | `--name` | `deploy` |
+| `APPGARDEN_METHOD` | `--method` | `deploy` |
+| `APPGARDEN_SOURCE` | `--source` | `deploy` |
+| `APPGARDEN_URL` | `--url` | `deploy` |
+| `APPGARDEN_SUBDOMAIN` | `--subdomain` | `deploy` |
+| `APPGARDEN_PATH` | `--path` | `deploy` |
+| `APPGARDEN_DOMAIN` | `--domain` | `deploy` |
+| `APPGARDEN_PORT` | `--port` | `deploy` |
+| `APPGARDEN_CONTAINER_PORT` | `--container-port` | `deploy` |
+| `APPGARDEN_CMD` | `--cmd` | `deploy` |
+| `APPGARDEN_SETUP_CMD` | `--setup-cmd` | `deploy` |
+| `APPGARDEN_BRANCH` | `--branch` | `deploy` |
+| `APPGARDEN_ENVVAR_FILE` | `--envvar-file` | `deploy` |
+| `APPGARDEN_ALL_ENVS` | `--all-envs` | `deploy` |
+| `APPGARDEN_PROJECT` | `--project` | `deploy` |
+
+CLI flags always take precedence over environment variables.
 
 ## Architecture
 
@@ -529,7 +554,7 @@ The user needs to log out and back in for the group membership to take effect. T
 All subsequent deploys use the restricted appgarden-deploy user:
 
 ```bash
-appgarden deploy myapp \
+appgarden deploy --name myapp \
   --method dockerfile \
   --source ./app/ \
   --url myapp.apps.example.com

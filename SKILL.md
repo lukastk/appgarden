@@ -107,29 +107,29 @@ Both `env` and `meta` are merged across levels (environment overrides app defaul
 
 ## Deploying without `appgarden.toml`
 
-For one-off deployments, pass everything via CLI flags:
+For one-off deployments, use `--name` and pass everything via CLI flags:
 
 ```bash
 # Static site
-appgarden deploy mysite --method static --source ./dist/ --subdomain mysite
+appgarden deploy --name mysite --method static --source ./dist/ --subdomain mysite
 
 # Dockerfile
-appgarden deploy myapp --method dockerfile --source . --container-port 3000 --subdomain myapp
+appgarden deploy --name myapp --method dockerfile --source . --container-port 3000 --subdomain myapp
 
 # Auto-detect runtime
-appgarden deploy myapp --method auto --source . --cmd "npm start" --subdomain myapp
+appgarden deploy --name myapp --method auto --source . --cmd "npm start" --subdomain myapp
 
 # Bare command (no Docker)
-appgarden deploy myapi --method command --cmd "python app.py" --source ./api/ --subdomain myapi
+appgarden deploy --name myapi --method command --cmd "python app.py" --source ./api/ --subdomain myapi
 
 # Explicit host port (instead of auto-allocation)
-appgarden deploy myapp --method dockerfile --source . --port 8080 --container-port 3000 --subdomain myapp
+appgarden deploy --name myapp --method dockerfile --source . --port 8080 --container-port 3000 --subdomain myapp
 
 # Docker Compose
-appgarden deploy mystack --method docker-compose --source ./project/ --subdomain mystack
+appgarden deploy --name mystack --method docker-compose --source ./project/ --subdomain mystack
 
 # With metadata
-appgarden deploy myapp --method dockerfile --source . --subdomain myapp \
+appgarden deploy --name myapp --method dockerfile --source . --subdomain myapp \
   --meta team=backend --meta visibility=internal
 ```
 
@@ -163,10 +163,10 @@ Use `--server <name>` on any command to target a specific server.
 
 ```bash
 # Inline
-appgarden deploy myapp ... --env DATABASE_URL=postgres://... --env SECRET_KEY=abc
+appgarden deploy --name myapp ... --envvar DATABASE_URL=postgres://... --envvar SECRET_KEY=abc
 
 # From file
-appgarden deploy myapp ... --env-file .env.production
+appgarden deploy --name myapp ... --envvar-file .env.production
 ```
 
 In `appgarden.toml`:
