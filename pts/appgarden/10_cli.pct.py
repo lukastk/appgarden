@@ -404,6 +404,7 @@ def _dispatch_deploy(
     container_port: int = 3000, cmd: str | None = None,
     setup_cmd: str | None = None, branch: str | None = None,
     env_vars: dict[str, str] | None = None, env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None, gitignore: bool = True,
     volumes: list[str] | None = None,
@@ -421,7 +422,8 @@ def _dispatch_deploy(
             console.print("[red]Error:[/red] --cmd is required for command deployments")
             raise typer.Exit(code=1)
         deploy_command(srv, name, cmd, url, port=port, source=source,
-                       branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                       branch=branch, env_vars=env_vars, env_file=env_file,
+                       env_overrides=env_overrides, meta=meta,
                        exclude=exclude, gitignore=gitignore)
 
     elif method == "docker-compose":
@@ -429,7 +431,8 @@ def _dispatch_deploy(
             console.print("[red]Error:[/red] --source is required for docker-compose deployments")
             raise typer.Exit(code=1)
         deploy_docker_compose(srv, name, source, url, port=port,
-                              branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                              branch=branch, env_vars=env_vars, env_file=env_file,
+                              env_overrides=env_overrides, meta=meta,
                               exclude=exclude, gitignore=gitignore)
 
     elif method == "dockerfile":
@@ -438,7 +441,8 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_dockerfile(srv, name, source, url, port=port,
                           container_port=container_port, branch=branch,
-                          env_vars=env_vars, env_file=env_file, meta=meta,
+                          env_vars=env_vars, env_file=env_file,
+                          env_overrides=env_overrides, meta=meta,
                           exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     elif method == "auto":
@@ -450,7 +454,8 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_auto(srv, name, source, cmd, url, port=port,
                     container_port=container_port, setup_cmd=setup_cmd,
-                    branch=branch, env_vars=env_vars, env_file=env_file, meta=meta,
+                    branch=branch, env_vars=env_vars, env_file=env_file,
+                    env_overrides=env_overrides, meta=meta,
                     exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     else:
@@ -528,6 +533,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         cmd=params.get("cmd"), setup_cmd=params.get("setup_cmd"),
         branch=params.get("branch"),
         env_vars=params.get("env"), env_file=params.get("env_file"),
+        env_overrides=params.get("env_overrides"),
         meta=params.get("meta"),
         exclude=params.get("exclude"), gitignore=params.get("gitignore", True),
         volumes=params.get("volumes"),
@@ -580,7 +586,7 @@ def deploy(
     }
     env_vars = _parse_env_list(envvar)
     if env_vars:
-        cli_flags["env"] = env_vars
+        cli_flags["env_overrides"] = env_vars
     meta_dict = _parse_meta_list(meta)
     if meta_dict:
         cli_flags["meta"] = meta_dict

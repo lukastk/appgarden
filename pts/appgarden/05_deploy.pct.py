@@ -168,31 +168,46 @@ def deploy_static(
 
 # %%
 #|export
+def _fmt_env(env_vars: dict[str, str]) -> str:
+    """Format env vars as KEY="VALUE" lines with proper escaping."""
+    lines = []
+    for k, v in env_vars.items():
+        validate_env_key(k)
+        escaped_v = v.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{k}="{escaped_v}"')
+    return "\n".join(lines) + "\n" if lines else ""
+
 def _write_env_file(
     host,
     name: str,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     ctx: RemoteContext | None = None,
 ) -> str | None:
-    """Write a .env file for an app. Returns the remote path, or None."""
-    if not env_vars and not env_file:
+    """Write a .env file for an app. Returns the remote path, or None.
+
+    Precedence (last write wins): env_vars < env_file < env_overrides.
+    """
+    if not env_vars and not env_file and not env_overrides:
         return None
 
-    content = ""
+    parts = []
+    # 1. Config env vars (lowest priority — from appgarden.toml)
+    if env_vars:
+        parts.append(_fmt_env(env_vars))
+    # 2. env_file content (overrides config env vars)
     if env_file:
         p = Path(env_file)
         if p.is_file():
-            content = p.read_text()
+            parts.append(p.read_text())
         else:
             console.print(f"[yellow]Warning:[/yellow] env_file not found: {p.resolve()}")
-    if env_vars:
-        for k, v in env_vars.items():
-            validate_env_key(k)
-            # Quote values to prevent shell interpretation
-            escaped_v = v.replace("\\", "\\\\").replace('"', '\\"')
-            content += f'{k}="{escaped_v}"\n'
+    # 3. CLI env overrides (highest priority — from --envvar flags)
+    if env_overrides:
+        parts.append(_fmt_env(env_overrides))
 
+    content = "\n".join(parts)
     remote_path = f"{_app_dir(name, ctx)}/.env"
     # Create file with restrictive permissions before writing content
     run_remote_command(host, f"install -m 600 /dev/null {shlex.quote(remote_path)}")
@@ -303,6 +318,7 @@ def deploy_command(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
@@ -328,13 +344,15 @@ def deploy_command(
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, ctx=ctx)
+        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
         # Create systemd unit
         console.print("  [dim]Creating systemd service...[/dim]")
         service_env = {"PORT": str(port)}
         if env_vars:
             service_env.update(env_vars)
+        if env_overrides:
+            service_env.update(env_overrides)
 
         unit_content = render_template(
             "systemd.service.j2",
@@ -383,6 +401,7 @@ def deploy_docker_compose(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
@@ -421,7 +440,7 @@ def deploy_docker_compose(
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, ctx=ctx)
+        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
         # Create systemd unit
         console.print("  [dim]Creating systemd service...[/dim]")
@@ -474,6 +493,7 @@ def deploy_dockerfile(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
@@ -507,7 +527,7 @@ def deploy_dockerfile(
         )
 
         # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, ctx=ctx)
+        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
         # Generate docker-compose.yml
         compose_content = render_template(

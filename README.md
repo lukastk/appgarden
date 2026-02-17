@@ -213,8 +213,8 @@ Environment files are stored on the server with `600` permissions (readable only
 
 All three sources can be combined. When duplicate keys exist, the precedence order is:
 
-1. `env_file` (base — loaded first)
-2. `appgarden.toml` `env` (overrides file)
+1. `appgarden.toml` `env` (base — loaded first)
+2. `env_file` (overrides toml)
 3. CLI `--envvar` flags (highest priority)
 
 ## App Metadata

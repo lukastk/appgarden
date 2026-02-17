@@ -160,6 +160,7 @@ def deploy_auto(
     branch: str | None = None,
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     meta: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
@@ -222,7 +223,7 @@ def deploy_auto(
         )
 
         # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, ctx=ctx)
+        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
         # Generate docker-compose.yml
         compose_content = render_template(
