@@ -140,7 +140,11 @@ def _write_env_file(
 
     content = ""
     if env_file:
-        content = Path(env_file).read_text()
+        p = Path(env_file)
+        if p.is_file():
+            content = p.read_text()
+        else:
+            console.print(f"[yellow]Warning:[/yellow] env_file not found: {p.resolve()}")
     if env_vars:
         for k, v in env_vars.items():
             validate_env_key(k)
