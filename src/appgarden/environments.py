@@ -4,6 +4,7 @@ __all__ = ['EnvironmentConfig', 'ProjectConfig', 'derive_app_name', 'list_enviro
 
 # %% pts/appgarden/08_environments.pct.py 3
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import tomllib
@@ -45,6 +46,31 @@ class ProjectConfig:
     environments: dict[str, dict] = field(default_factory=dict)
 
 # %% pts/appgarden/08_environments.pct.py 8
+def _normalize_timestamp(value) -> str | None:
+    """Normalize a timestamp value to an ISO 8601 string.
+
+    Accepts:
+    - None → None
+    - datetime.datetime (TOML native) → ISO string (assumes UTC if naive)
+    - datetime.date (TOML native) → midnight UTC ISO string
+    - "2025-01-15" (short date string) → "2025-01-15T00:00:00+00:00"
+    - Full ISO string → passed through as-is
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc).isoformat()
+    s = str(value)
+    # Short date: "2025-01-15"
+    if len(s) == 10 and s[4:5] == "-" and s[7:8] == "-":
+        return f"{s}T00:00:00+00:00"
+    return s
+
+# %% pts/appgarden/08_environments.pct.py 10
 def load_project_config(path: str | Path = ".") -> ProjectConfig:
     """Load project config from a directory or explicit toml file.
 
@@ -80,7 +106,7 @@ def load_project_config(path: str | Path = ".") -> ProjectConfig:
         environments=environments,
     )
 
-# %% pts/appgarden/08_environments.pct.py 10
+# %% pts/appgarden/08_environments.pct.py 12
 def derive_app_name(base_name: str, env_name: str) -> str:
     """Derive the deployed app name from base name and environment.
 
@@ -91,7 +117,7 @@ def derive_app_name(base_name: str, env_name: str) -> str:
         return base_name
     return f"{base_name}-{env_name}"
 
-# %% pts/appgarden/08_environments.pct.py 12
+# %% pts/appgarden/08_environments.pct.py 14
 def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConfig:
     """Resolve a named environment into a full deployment configuration.
 
@@ -184,16 +210,16 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         exclude=merged_exclude,
         volumes=merged_volumes,
         gitignore=merged.get("gitignore", True),
-        created_at=merged.get("created_at"),
-        updated_at=merged.get("updated_at"),
+        created_at=_normalize_timestamp(merged.get("created_at")),
+        updated_at=_normalize_timestamp(merged.get("updated_at")),
     )
 
-# %% pts/appgarden/08_environments.pct.py 14
+# %% pts/appgarden/08_environments.pct.py 16
 def list_environments(config: ProjectConfig) -> list[str]:
     """Return sorted list of environment names."""
     return sorted(config.environments.keys())
 
-# %% pts/appgarden/08_environments.pct.py 16
+# %% pts/appgarden/08_environments.pct.py 18
 def resolve_all_environments(config: ProjectConfig) -> list[EnvironmentConfig]:
     """Resolve all environments into deployment configurations."""
     return [resolve_environment(config, name) for name in list_environments(config)]

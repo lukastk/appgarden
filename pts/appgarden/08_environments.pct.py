@@ -22,6 +22,7 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import tomllib
@@ -66,6 +67,35 @@ class ProjectConfig:
     app_slug: str | None = None
     app_defaults: dict = field(default_factory=dict)
     environments: dict[str, dict] = field(default_factory=dict)
+
+# %% [markdown]
+# ## Timestamp normalization
+
+# %%
+#|export
+def _normalize_timestamp(value) -> str | None:
+    """Normalize a timestamp value to an ISO 8601 string.
+
+    Accepts:
+    - None → None
+    - datetime.datetime (TOML native) → ISO string (assumes UTC if naive)
+    - datetime.date (TOML native) → midnight UTC ISO string
+    - "2025-01-15" (short date string) → "2025-01-15T00:00:00+00:00"
+    - Full ISO string → passed through as-is
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc).isoformat()
+    s = str(value)
+    # Short date: "2025-01-15"
+    if len(s) == 10 and s[4:5] == "-" and s[7:8] == "-":
+        return f"{s}T00:00:00+00:00"
+    return s
 
 # %% [markdown]
 # ## load_project_config
@@ -219,8 +249,8 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         exclude=merged_exclude,
         volumes=merged_volumes,
         gitignore=merged.get("gitignore", True),
-        created_at=merged.get("created_at"),
-        updated_at=merged.get("updated_at"),
+        created_at=_normalize_timestamp(merged.get("created_at")),
+        updated_at=_normalize_timestamp(merged.get("updated_at")),
     )
 
 # %% [markdown]

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from appgarden.environments import (
     load_project_config, resolve_environment, resolve_all_environments,
-    derive_app_name, list_environments,
+    derive_app_name, list_environments, _normalize_timestamp,
     ProjectConfig, EnvironmentConfig,
 )
 from appgarden.cli import _resolve_deploy_params, _env_config_to_dict, DEPLOY_DEFAULTS
@@ -978,3 +978,65 @@ subdomain = "myapp"
     params = _resolve_deploy_params(cli, env_cfg=env_dict)
     assert params["created_at"] == "2025-01-15T10:00:00+00:00"
     assert "updated_at" not in params
+
+# %% [markdown]
+# ## Timestamp normalization
+
+# %%
+#|export
+def test_normalize_timestamp_none():
+    """None returns None."""
+    assert _normalize_timestamp(None) is None
+
+# %%
+#|export
+def test_normalize_timestamp_short_date():
+    """Short date string is expanded to midnight UTC."""
+    assert _normalize_timestamp("2025-01-15") == "2025-01-15T00:00:00+00:00"
+
+# %%
+#|export
+def test_normalize_timestamp_full_iso():
+    """Full ISO string passes through unchanged."""
+    assert _normalize_timestamp("2025-01-15T10:00:00+00:00") == "2025-01-15T10:00:00+00:00"
+
+# %%
+#|export
+def test_normalize_timestamp_date_object():
+    """datetime.date object is converted to midnight UTC."""
+    from datetime import date
+    assert _normalize_timestamp(date(2025, 1, 15)) == "2025-01-15T00:00:00+00:00"
+
+# %%
+#|export
+def test_normalize_timestamp_datetime_object():
+    """datetime.datetime object is converted to ISO string."""
+    from datetime import datetime, timezone
+    dt = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    assert _normalize_timestamp(dt) == "2025-01-15T10:00:00+00:00"
+
+# %%
+#|export
+def test_normalize_timestamp_naive_datetime():
+    """Naive datetime gets UTC assumed."""
+    from datetime import datetime
+    dt = datetime(2025, 1, 15, 10, 0, 0)
+    assert _normalize_timestamp(dt) == "2025-01-15T10:00:00+00:00"
+
+# %%
+#|export
+def test_resolve_short_date_in_toml(tmp_path):
+    """Short date in appgarden.toml is normalized to full ISO."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+created_at = "2025-01-15"
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.created_at == "2025-01-15T00:00:00+00:00"
