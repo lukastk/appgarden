@@ -94,8 +94,8 @@ All fields from `[app]` are inherited by every environment unless overridden. Th
 | `port` | Host port (auto-allocated if omitted) |
 | `env` | Inline env vars: `{ KEY = "value" }` |
 | `meta` | Arbitrary metadata: `{ team = "backend", visibility = "internal" }` |
-| `created_at` | Explicit creation timestamp (ISO 8601); overrides auto-generated value |
-| `updated_at` | Explicit update timestamp (ISO 8601); overrides auto-generated value |
+| `created_at` | Explicit creation timestamp; overrides auto-generated value. Accepts `"2025-01-15"` (short date), full ISO 8601, or TOML native dates |
+| `updated_at` | Explicit update timestamp; same formats as `created_at` |
 
 **`[environments.<name>]` sections** — same fields as `[app]` plus:
 
