@@ -94,6 +94,8 @@ All fields from `[app]` are inherited by every environment unless overridden. Th
 | `port` | Host port (auto-allocated if omitted) |
 | `env` | Inline env vars: `{ KEY = "value" }` |
 | `meta` | Arbitrary metadata: `{ team = "backend", visibility = "internal" }` |
+| `created_at` | Explicit creation timestamp (ISO 8601); overrides auto-generated value |
+| `updated_at` | Explicit update timestamp (ISO 8601); overrides auto-generated value |
 
 **`[environments.<name>]` sections** — same fields as `[app]` plus:
 
