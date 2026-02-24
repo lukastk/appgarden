@@ -436,7 +436,7 @@ def test_deploy_static_with_meta():
         deploy_static(
             _make_server(), "mysite", "/tmp/site",
             "mysite.apps.example.com",
-            meta={"team": "frontend", "tier": "free"},
+            extra={"meta": {"team": "frontend", "tier": "free"}},
         )
 
     written = _get_written_files(host)
@@ -475,7 +475,7 @@ def test_deploy_command_with_meta():
         deploy_command(
             _make_server(), "myapp", "python app.py",
             "myapp.apps.example.com",
-            meta={"visibility": "internal"},
+            extra={"meta": {"visibility": "internal"}},
         )
 
     written = _get_written_files(host)

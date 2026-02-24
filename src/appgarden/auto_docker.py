@@ -126,7 +126,7 @@ def deploy_auto(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     env_overrides: dict[str, str] | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
     volumes: list[str] | None = None,
@@ -227,15 +227,15 @@ def deploy_auto(
         )
 
         # Register
-        extra = {"auto_detected_runtime": runtime.name}
-        if meta:
-            extra["meta"] = meta
+        reg_extra = {"auto_detected_runtime": runtime.name}
+        if extra:
+            reg_extra.update(extra)
         _register_app(
             host, garden_state, name, "auto", url,
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra=extra, exclude=exclude, gitignore=gitignore,
+            extra=reg_extra, exclude=exclude, gitignore=gitignore,
             volumes=volumes, ctx=ctx,
         )
 

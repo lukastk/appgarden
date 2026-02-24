@@ -346,7 +346,7 @@ def _dispatch_deploy(
     setup_cmd: str | None = None, branch: str | None = None,
     env_vars: dict[str, str] | None = None, env_file: str | None = None,
     env_overrides: dict[str, str] | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None, gitignore: bool = True,
     volumes: list[str] | None = None,
 ) -> None:
@@ -355,7 +355,7 @@ def _dispatch_deploy(
         if not source:
             console.print("[red]Error:[/red] --source is required for static deployments")
             raise typer.Exit(code=1)
-        deploy_static(srv, name, source, url, branch=branch, meta=meta,
+        deploy_static(srv, name, source, url, branch=branch, extra=extra,
                        exclude=exclude, gitignore=gitignore)
 
     elif method == "command":
@@ -364,7 +364,7 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_command(srv, name, cmd, url, port=port, source=source,
                        branch=branch, env_vars=env_vars, env_file=env_file,
-                       env_overrides=env_overrides, meta=meta,
+                       env_overrides=env_overrides, extra=extra,
                        exclude=exclude, gitignore=gitignore)
 
     elif method == "docker-compose":
@@ -373,7 +373,7 @@ def _dispatch_deploy(
             raise typer.Exit(code=1)
         deploy_docker_compose(srv, name, source, url, port=port,
                               branch=branch, env_vars=env_vars, env_file=env_file,
-                              env_overrides=env_overrides, meta=meta,
+                              env_overrides=env_overrides, extra=extra,
                               exclude=exclude, gitignore=gitignore)
 
     elif method == "dockerfile":
@@ -383,7 +383,7 @@ def _dispatch_deploy(
         deploy_dockerfile(srv, name, source, url, port=port,
                           container_port=container_port, branch=branch,
                           env_vars=env_vars, env_file=env_file,
-                          env_overrides=env_overrides, meta=meta,
+                          env_overrides=env_overrides, extra=extra,
                           exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     elif method == "auto":
@@ -396,7 +396,7 @@ def _dispatch_deploy(
         deploy_auto(srv, name, source, cmd, url, port=port,
                     container_port=container_port, setup_cmd=setup_cmd,
                     branch=branch, env_vars=env_vars, env_file=env_file,
-                    env_overrides=env_overrides, meta=meta,
+                    env_overrides=env_overrides, extra=extra,
                     exclude=exclude, gitignore=gitignore, volumes=volumes)
 
     else:
@@ -409,7 +409,7 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
     d = {}
     for key in ("server", "method", "url", "source", "port", "container_port",
                 "cmd", "setup_cmd", "branch", "env_file",
-                "subdomain", "path", "domain"):
+                "subdomain", "path", "domain", "created_at", "updated_at"):
         val = getattr(env_cfg, key, None)
         if val is not None:
             d[key] = val
@@ -466,6 +466,14 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
 
     _check_dns(url, expected_ip=srv.host)
     console.print(f"Deploying [bold]{app_name}[/bold] to {url}...")
+    extra = {}
+    if params.get("meta"):
+        extra["meta"] = params["meta"]
+    if params.get("created_at"):
+        extra["created_at"] = params["created_at"]
+    if params.get("updated_at"):
+        extra["updated_at"] = params["updated_at"]
+
     _dispatch_deploy(
         srv, app_name, method, url,
         source=params.get("source"), port=params.get("port"),
@@ -474,7 +482,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         branch=params.get("branch"),
         env_vars=params.get("env"), env_file=params.get("env_file"),
         env_overrides=params.get("env_overrides"),
-        meta=params.get("meta"),
+        extra=extra or None,
         exclude=params.get("exclude"), gitignore=params.get("gitignore", True),
         volumes=params.get("volumes"),
     )

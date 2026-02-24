@@ -123,7 +123,7 @@ def deploy_static(
     source: str,
     url: str,
     branch: str | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
 ) -> None:
@@ -157,8 +157,7 @@ def deploy_static(
         _register_app(
             host, garden_state, name, "static", url,
             source=source, source_type=source_type, branch=branch,
-            extra={"meta": meta} if meta else None,
-            exclude=exclude, gitignore=gitignore, ctx=ctx,
+            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -319,7 +318,7 @@ def deploy_command(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     env_overrides: dict[str, str] | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
 ) -> None:
@@ -379,8 +378,7 @@ def deploy_command(
             host, garden_state, name, "command", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None,
-            exclude=exclude, gitignore=gitignore, ctx=ctx,
+            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -402,7 +400,7 @@ def deploy_docker_compose(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     env_overrides: dict[str, str] | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
 ) -> None:
@@ -469,8 +467,7 @@ def deploy_docker_compose(
             host, garden_state, name, "docker-compose", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None,
-            exclude=exclude, gitignore=gitignore, ctx=ctx,
+            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
@@ -494,7 +491,7 @@ def deploy_dockerfile(
     env_vars: dict[str, str] | None = None,
     env_file: str | None = None,
     env_overrides: dict[str, str] | None = None,
-    meta: dict | None = None,
+    extra: dict | None = None,
     exclude: list[str] | None = None,
     gitignore: bool = True,
     volumes: list[str] | None = None,
@@ -572,8 +569,7 @@ def deploy_dockerfile(
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,
-            extra={"meta": meta} if meta else None,
-            exclude=exclude, gitignore=gitignore,
+            extra=extra, exclude=exclude, gitignore=gitignore,
             volumes=volumes, ctx=ctx,
         )
 

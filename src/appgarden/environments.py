@@ -32,6 +32,8 @@ class EnvironmentConfig:
     exclude: list[str] = field(default_factory=list)
     volumes: list[str] = field(default_factory=list)
     gitignore: bool = True
+    created_at: str | None = None
+    updated_at: str | None = None
 
 # %% pts/appgarden/08_environments.pct.py 6
 @dataclass
@@ -182,6 +184,8 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         exclude=merged_exclude,
         volumes=merged_volumes,
         gitignore=merged.get("gitignore", True),
+        created_at=merged.get("created_at"),
+        updated_at=merged.get("updated_at"),
     )
 
 # %% pts/appgarden/08_environments.pct.py 14

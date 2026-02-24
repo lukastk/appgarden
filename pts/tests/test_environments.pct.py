@@ -884,3 +884,97 @@ def test_apps_list_appgarden_server_envvar(tmp_path, monkeypatch):
     assert result.exit_code != 0
     # The error should be about the server not being found, not about missing --server flag
     assert "testserver" in result.output or "no servers configured" in result.output.lower()
+
+# %% [markdown]
+# ## Explicit created_at / updated_at
+
+# %%
+#|export
+def test_resolve_created_at_from_app_defaults(tmp_path):
+    """App-level created_at is inherited by environments."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+created_at = "2025-01-15T10:00:00+00:00"
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.created_at == "2025-01-15T10:00:00+00:00"
+    assert env.updated_at is None
+
+# %%
+#|export
+def test_resolve_timestamps_env_overrides_app(tmp_path):
+    """Environment-level timestamps override app-level ones."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+created_at = "2025-01-15T10:00:00+00:00"
+updated_at = "2025-01-15T10:00:00+00:00"
+
+[environments.production]
+url = "myapp.example.com"
+created_at = "2025-06-01T00:00:00+00:00"
+updated_at = "2025-06-01T12:00:00+00:00"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.created_at == "2025-06-01T00:00:00+00:00"
+    assert env.updated_at == "2025-06-01T12:00:00+00:00"
+
+# %%
+#|export
+def test_env_config_to_dict_includes_timestamps():
+    """_env_config_to_dict includes non-None timestamps."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="static", url="myapp.example.com",
+        created_at="2025-01-15T10:00:00+00:00",
+    )
+    d = _env_config_to_dict(env)
+    assert d["created_at"] == "2025-01-15T10:00:00+00:00"
+    assert "updated_at" not in d
+
+# %%
+#|export
+def test_env_config_to_dict_omits_none_timestamps():
+    """_env_config_to_dict omits timestamps when they are None."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="static", url="myapp.example.com",
+    )
+    d = _env_config_to_dict(env)
+    assert "created_at" not in d
+    assert "updated_at" not in d
+
+# %%
+#|export
+def test_cascade_timestamps_flow_through(tmp_path):
+    """Timestamps from appgarden.toml flow through env resolution and deploy param cascade."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+source = "."
+created_at = "2025-01-15T10:00:00+00:00"
+
+[environments.production]
+subdomain = "myapp"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    env_dict = _env_config_to_dict(env)
+    assert env_dict["created_at"] == "2025-01-15T10:00:00+00:00"
+
+    cli = {"method": None, "source": None, "url": None}
+    params = _resolve_deploy_params(cli, env_cfg=env_dict)
+    assert params["created_at"] == "2025-01-15T10:00:00+00:00"
+    assert "updated_at" not in params
