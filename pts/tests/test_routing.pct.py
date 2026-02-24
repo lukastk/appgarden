@@ -23,6 +23,8 @@ from nblite import nbl_export; nbl_export();
 #|export
 from unittest.mock import MagicMock, patch, call
 
+import pytest
+
 from appgarden.routing import (
     parse_url,
     generate_caddy_config,
@@ -30,6 +32,7 @@ from appgarden.routing import (
     remove_caddy_config,
     render_template,
     _collect_subdirectory_apps,
+    _check_url_conflict,
     _caddy_file_path,
     _domain_caddy_file_path,
 )
@@ -163,6 +166,7 @@ def test_deploy_caddy_config_subdomain():
 
     deploy_caddy_config(
         host, app_name="myapp", domain="myapp.apps.example.com", port=10000,
+        garden_state={"apps": {}},
     )
 
     # Should have written a file
@@ -359,3 +363,72 @@ def test_render_dockerfile_template():
     assert "COPY package*.json ." in content
     assert "RUN npm ci --production" in content
     assert "EXPOSE 3000" in content
+
+# %% [markdown]
+# ## URL conflict detection
+
+# %%
+#|export
+def test_check_url_conflict_raises_on_duplicate():
+    """_check_url_conflict raises ValueError when another app claims the same URL."""
+    garden_state = {
+        "apps": {
+            "old-app": {"url": "myapp.apps.example.com", "method": "static"},
+        },
+    }
+    with pytest.raises(ValueError, match="already registered to app 'old-app'"):
+        _check_url_conflict(garden_state, "new-app", "myapp.apps.example.com", None)
+
+# %%
+#|export
+def test_check_url_conflict_allows_same_app():
+    """_check_url_conflict allows redeploying the same app name."""
+    garden_state = {
+        "apps": {
+            "myapp": {"url": "myapp.apps.example.com", "method": "static"},
+        },
+    }
+    # Should not raise
+    _check_url_conflict(garden_state, "myapp", "myapp.apps.example.com", None)
+
+# %%
+#|export
+def test_check_url_conflict_different_urls_ok():
+    """_check_url_conflict allows different URLs."""
+    garden_state = {
+        "apps": {
+            "other": {"url": "other.apps.example.com", "method": "static"},
+        },
+    }
+    # Should not raise
+    _check_url_conflict(garden_state, "myapp", "myapp.apps.example.com", None)
+
+# %%
+#|export
+def test_check_url_conflict_subdirectory():
+    """_check_url_conflict detects conflicts for subdirectory routes."""
+    garden_state = {
+        "apps": {
+            "old-app": {"url": "apps.example.com/api", "method": "command"},
+        },
+    }
+    with pytest.raises(ValueError, match="already registered to app 'old-app'"):
+        _check_url_conflict(garden_state, "new-app", "apps.example.com", "api")
+
+# %%
+#|export
+def test_deploy_caddy_config_raises_on_url_conflict():
+    """deploy_caddy_config raises ValueError when URL conflicts with another app."""
+    host = MagicMock()
+
+    garden_state = {
+        "apps": {
+            "old-app": {"url": "myapp.apps.example.com", "method": "static"},
+        },
+    }
+
+    with pytest.raises(ValueError, match="already registered to app 'old-app'"):
+        deploy_caddy_config(
+            host, app_name="new-app", domain="myapp.apps.example.com",
+            port=10000, garden_state=garden_state,
+        )

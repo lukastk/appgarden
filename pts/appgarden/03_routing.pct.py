@@ -174,6 +174,21 @@ def _collect_subdirectory_apps(garden_state: dict, domain: str) -> list[dict]:
 
 # %%
 #|export
+def _check_url_conflict(garden_state: dict, app_name: str, domain: str, path: str | None) -> None:
+    """Raise ValueError if another app already claims this URL."""
+    for name, app in garden_state.get("apps", {}).items():
+        if name == app_name:
+            continue
+        app_domain, app_path = parse_url(app.get("url", ""))
+        if app_domain == domain and app_path == path:
+            url = f"{domain}/{path}" if path else domain
+            raise ValueError(
+                f"URL '{url}' is already registered to app '{name}'. "
+                f"Run `appgarden apps remove {name} --yes` first, or use a different URL."
+            )
+
+# %%
+#|export
 def deploy_caddy_config(
     host,
     app_name: str,
@@ -190,10 +205,12 @@ def deploy_caddy_config(
     For subdirectory apps, reads garden state to merge all apps
     on the same domain into one file.
     """
+    if garden_state is None:
+        garden_state = read_garden_state(host, ctx=ctx)
+    _check_url_conflict(garden_state, app_name, domain, path)
+
     if path is not None:
         # Subdirectory routing: merge all apps on this domain
-        if garden_state is None:
-            garden_state = read_garden_state(host, ctx=ctx)
         apps = _collect_subdirectory_apps(garden_state, domain)
 
         # Include the current app (may not be in garden_state yet)

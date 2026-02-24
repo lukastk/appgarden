@@ -261,6 +261,17 @@ appgarden apps status myapp         # Detailed info for one app
 appgarden apps logs myapp           # Recent logs
 ```
 
+### Rename an app
+
+If you change the app `name` in `appgarden.toml`, remove the old app first — otherwise the old Caddy config will conflict with the new one:
+
+```bash
+appgarden apps remove old-name --yes
+appgarden deploy production
+```
+
+AppGarden will detect the conflict and show an error with the old app name if you forget.
+
 ### Debug a failing app
 
 ```bash
