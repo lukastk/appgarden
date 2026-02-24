@@ -49,6 +49,7 @@ from appgarden.tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_st
 # %%
 #|export
 import socket
+import subprocess
 
 # %%
 #|export
@@ -355,6 +356,21 @@ def _parse_meta_list(meta: list[str] | None) -> dict | None:
     return result
 
 # %%
+#|exporti
+def _detect_git_remote(source_path: str) -> str | None:
+    """Detect the git remote origin URL for a local source path. Returns None on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, cwd=source_path, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+# %%
 #|export
 DEPLOY_DEFAULTS = {"method": "static", "container_port": 3000}
 
@@ -469,7 +485,7 @@ def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
     d = {}
     for key in ("server", "method", "url", "source", "port", "container_port",
                 "cmd", "setup_cmd", "branch", "env_file",
-                "subdomain", "path", "domain", "created_at", "updated_at"):
+                "subdomain", "path", "domain", "created_at", "updated_at", "repo"):
         val = getattr(env_cfg, key, None)
         if val is not None:
             d[key] = val
@@ -533,6 +549,17 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         extra["created_at"] = params["created_at"]
     if params.get("updated_at"):
         extra["updated_at"] = params["updated_at"]
+
+    # Repo URL: explicit value or auto-detect from local git source
+    repo = params.get("repo")
+    if not repo:
+        source = params.get("source")
+        if source and not source.startswith(("https://", "http://", "git@", "git://")):
+            from pathlib import Path as _P
+            if _P(source).is_dir():
+                repo = _detect_git_remote(source)
+    if repo:
+        extra["repo"] = repo
 
     _dispatch_deploy(
         srv, app_name, method, url,

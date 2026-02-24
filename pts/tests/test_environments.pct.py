@@ -980,6 +980,50 @@ subdomain = "myapp"
     assert "updated_at" not in params
 
 # %% [markdown]
+# ## Repo field
+
+# %%
+#|export
+def test_resolve_repo_from_app_defaults(tmp_path):
+    """App-level repo is inherited by environments."""
+    toml = """\
+[app]
+name = "myapp"
+method = "static"
+repo = "https://github.com/user/myapp"
+
+[environments.production]
+url = "myapp.example.com"
+"""
+    (tmp_path / "appgarden.toml").write_text(toml)
+    cfg = load_project_config(tmp_path)
+    env = resolve_environment(cfg, "production")
+    assert env.repo == "https://github.com/user/myapp"
+
+# %%
+#|export
+def test_env_config_to_dict_includes_repo():
+    """_env_config_to_dict includes non-None repo."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="static", url="myapp.example.com",
+        repo="https://github.com/user/myapp",
+    )
+    d = _env_config_to_dict(env)
+    assert d["repo"] == "https://github.com/user/myapp"
+
+# %%
+#|export
+def test_env_config_to_dict_omits_none_repo():
+    """_env_config_to_dict omits repo when it is None."""
+    env = EnvironmentConfig(
+        name="production", app_name="myapp",
+        method="static", url="myapp.example.com",
+    )
+    d = _env_config_to_dict(env)
+    assert "repo" not in d
+
+# %% [markdown]
 # ## Timestamp normalization
 
 # %%

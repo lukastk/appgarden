@@ -57,6 +57,7 @@ class EnvironmentConfig:
     gitignore: bool = True
     created_at: str | None = None
     updated_at: str | None = None
+    repo: str | None = None
 
 # %%
 #|export
@@ -251,6 +252,7 @@ def resolve_environment(config: ProjectConfig, env_name: str) -> EnvironmentConf
         gitignore=merged.get("gitignore", True),
         created_at=_normalize_timestamp(merged.get("created_at")),
         updated_at=_normalize_timestamp(merged.get("updated_at")),
+        repo=merged.get("repo"),
     )
 
 # %% [markdown]

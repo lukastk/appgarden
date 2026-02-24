@@ -31,6 +31,7 @@ from .tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_stale_tunne
 
 # %% pts/appgarden/10_cli.pct.py 4
 import socket
+import subprocess
 
 # %% pts/appgarden/10_cli.pct.py 5
 _verbose = False
@@ -298,6 +299,20 @@ def _parse_meta_list(meta: list[str] | None) -> dict | None:
     return result
 
 # %% pts/appgarden/10_cli.pct.py 26
+def _detect_git_remote(source_path: str) -> str | None:
+    """Detect the git remote origin URL for a local source path. Returns None on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, cwd=source_path, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+# %% pts/appgarden/10_cli.pct.py 27
 DEPLOY_DEFAULTS = {"method": "static", "container_port": 3000}
 
 def _resolve_deploy_params(
@@ -338,7 +353,7 @@ def _resolve_deploy_params(
 
     return result
 
-# %% pts/appgarden/10_cli.pct.py 27
+# %% pts/appgarden/10_cli.pct.py 28
 def _dispatch_deploy(
     srv: ServerConfig, name: str, method: str, url: str,
     source: str | None = None, port: int | None = None,
@@ -403,13 +418,13 @@ def _dispatch_deploy(
         console.print(f"[red]Error:[/red] Unknown method '{method}'")
         raise typer.Exit(code=1)
 
-# %% pts/appgarden/10_cli.pct.py 28
+# %% pts/appgarden/10_cli.pct.py 29
 def _env_config_to_dict(env_cfg: "EnvironmentConfig") -> dict:
     """Convert an EnvironmentConfig to a dict for cascading, dropping None/empty values."""
     d = {}
     for key in ("server", "method", "url", "source", "port", "container_port",
                 "cmd", "setup_cmd", "branch", "env_file",
-                "subdomain", "path", "domain", "created_at", "updated_at"):
+                "subdomain", "path", "domain", "created_at", "updated_at", "repo"):
         val = getattr(env_cfg, key, None)
         if val is not None:
             d[key] = val
@@ -474,6 +489,17 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
     if params.get("updated_at"):
         extra["updated_at"] = params["updated_at"]
 
+    # Repo URL: explicit value or auto-detect from local git source
+    repo = params.get("repo")
+    if not repo:
+        source = params.get("source")
+        if source and not source.startswith(("https://", "http://", "git@", "git://")):
+            from pathlib import Path as _P
+            if _P(source).is_dir():
+                repo = _detect_git_remote(source)
+    if repo:
+        extra["repo"] = repo
+
     _dispatch_deploy(
         srv, app_name, method, url,
         source=params.get("source"), port=params.get("port"),
@@ -487,7 +513,7 @@ def _deploy_from_params(cfg: "AppGardenConfig", params: dict, app_name: str) -> 
         volumes=params.get("volumes"),
     )
 
-# %% pts/appgarden/10_cli.pct.py 29
+# %% pts/appgarden/10_cli.pct.py 30
 @app.command()
 def deploy(
     env_name: Optional[str] = typer.Argument(None, help="Environment name from appgarden.toml"),
@@ -621,7 +647,7 @@ def deploy(
     params = _resolve_deploy_params(cli_flags, env_cfg=None, project_defaults=project_defaults, global_defaults=global_defaults)
     _deploy_from_params(cfg, _resolve_local_paths(params), app_name)
 
-# %% pts/appgarden/10_cli.pct.py 31
+# %% pts/appgarden/10_cli.pct.py 32
 apps_app = typer.Typer(
     name="apps",
     help="Manage deployed applications.",
@@ -629,7 +655,7 @@ apps_app = typer.Typer(
 )
 app.add_typer(apps_app, name="apps")
 
-# %% pts/appgarden/10_cli.pct.py 33
+# %% pts/appgarden/10_cli.pct.py 34
 @apps_app.command("list")
 def apps_list(
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
@@ -661,7 +687,7 @@ def apps_list(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 35
+# %% pts/appgarden/10_cli.pct.py 36
 @apps_app.command("status")
 def apps_status(
     name: str = typer.Argument(help="App name"),
@@ -707,7 +733,7 @@ def apps_status(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 37
+# %% pts/appgarden/10_cli.pct.py 38
 @apps_app.command("stop")
 def apps_stop(
     name: str = typer.Argument(help="App name"),
@@ -727,7 +753,7 @@ def apps_stop(
         stop_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] stopped.")
 
-# %% pts/appgarden/10_cli.pct.py 38
+# %% pts/appgarden/10_cli.pct.py 39
 @apps_app.command("start")
 def apps_start(
     name: str = typer.Argument(help="App name"),
@@ -747,7 +773,7 @@ def apps_start(
         start_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] started.")
 
-# %% pts/appgarden/10_cli.pct.py 39
+# %% pts/appgarden/10_cli.pct.py 40
 @apps_app.command("restart")
 def apps_restart(
     name: str = typer.Argument(help="App name"),
@@ -767,7 +793,7 @@ def apps_restart(
         restart_app(host, name, ctx=ctx)
     console.print(f"App [bold]{name}[/bold] restarted.")
 
-# %% pts/appgarden/10_cli.pct.py 41
+# %% pts/appgarden/10_cli.pct.py 42
 @apps_app.command("logs")
 def apps_logs(
     name: str = typer.Argument(help="App name"),
@@ -788,7 +814,7 @@ def apps_logs(
         output = app_logs(host, name, lines=lines, ctx=ctx)
     console.print(output)
 
-# %% pts/appgarden/10_cli.pct.py 43
+# %% pts/appgarden/10_cli.pct.py 44
 @apps_app.command("remove")
 def apps_remove(
     name: str = typer.Argument(help="App name"),
@@ -820,7 +846,7 @@ def apps_remove(
 
     console.print(f"App [bold]{name}[/bold] removed.")
 
-# %% pts/appgarden/10_cli.pct.py 45
+# %% pts/appgarden/10_cli.pct.py 46
 @apps_app.command("redeploy")
 def apps_redeploy(
     name: str = typer.Argument(help="App name"),
@@ -845,7 +871,7 @@ def apps_redeploy(
 
     console.print(f"App [bold]{name}[/bold] redeployed.")
 
-# %% pts/appgarden/10_cli.pct.py 47
+# %% pts/appgarden/10_cli.pct.py 48
 meta_app = typer.Typer(
     name="meta",
     help="Manage app metadata.",
@@ -853,7 +879,7 @@ meta_app = typer.Typer(
 )
 apps_app.add_typer(meta_app, name="meta")
 
-# %% pts/appgarden/10_cli.pct.py 48
+# %% pts/appgarden/10_cli.pct.py 49
 @meta_app.command("get")
 def meta_get(
     name: str = typer.Argument(help="App name"),
@@ -882,7 +908,7 @@ def meta_get(
         import json as _json
         console.print(_json.dumps(meta, indent=2))
 
-# %% pts/appgarden/10_cli.pct.py 49
+# %% pts/appgarden/10_cli.pct.py 50
 @meta_app.command("set")
 def meta_set(
     name: str = typer.Argument(help="App name"),
@@ -913,7 +939,7 @@ def meta_set(
 
     console.print(f"Metadata updated for [bold]{name}[/bold].")
 
-# %% pts/appgarden/10_cli.pct.py 50
+# %% pts/appgarden/10_cli.pct.py 51
 @meta_app.command("replace")
 def meta_replace(
     name: str = typer.Argument(help="App name"),
@@ -949,7 +975,7 @@ def meta_replace(
 
     console.print(f"Metadata replaced for [bold]{name}[/bold].")
 
-# %% pts/appgarden/10_cli.pct.py 51
+# %% pts/appgarden/10_cli.pct.py 52
 @meta_app.command("remove")
 def meta_remove(
     name: str = typer.Argument(help="App name"),
@@ -975,7 +1001,7 @@ def meta_remove(
 
     console.print(f"Metadata keys removed from [bold]{name}[/bold].")
 
-# %% pts/appgarden/10_cli.pct.py 53
+# %% pts/appgarden/10_cli.pct.py 54
 tunnel_app = typer.Typer(
     name="tunnel",
     help="Manage localhost tunnels.",
@@ -983,7 +1009,7 @@ tunnel_app = typer.Typer(
 )
 app.add_typer(tunnel_app, name="tunnel")
 
-# %% pts/appgarden/10_cli.pct.py 55
+# %% pts/appgarden/10_cli.pct.py 56
 @tunnel_app.command("open")
 def tunnel_open(
     local_port: int = typer.Argument(help="Local port to expose"),
@@ -1000,7 +1026,7 @@ def tunnel_open(
 
     open_tunnel(srv, local_port, url)
 
-# %% pts/appgarden/10_cli.pct.py 57
+# %% pts/appgarden/10_cli.pct.py 58
 @tunnel_app.command("list")
 def tunnel_list(
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
@@ -1032,7 +1058,7 @@ def tunnel_list(
 
     console.print(table)
 
-# %% pts/appgarden/10_cli.pct.py 59
+# %% pts/appgarden/10_cli.pct.py 60
 @tunnel_app.command("close")
 def tunnel_close(
     tunnel_id: str = typer.Argument(help="Tunnel ID to close"),
@@ -1049,7 +1075,7 @@ def tunnel_close(
     close_tunnel(srv, tunnel_id)
     console.print(f"Tunnel [bold]{tunnel_id}[/bold] closed.")
 
-# %% pts/appgarden/10_cli.pct.py 61
+# %% pts/appgarden/10_cli.pct.py 62
 @tunnel_app.command("cleanup")
 def tunnel_cleanup(
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
@@ -1069,7 +1095,7 @@ def tunnel_cleanup(
     else:
         console.print("No stale tunnels found.")
 
-# %% pts/appgarden/10_cli.pct.py 63
+# %% pts/appgarden/10_cli.pct.py 64
 config_app = typer.Typer(
     name="config",
     help="View configuration.",
@@ -1077,7 +1103,7 @@ config_app = typer.Typer(
 )
 app.add_typer(config_app, name="config")
 
-# %% pts/appgarden/10_cli.pct.py 65
+# %% pts/appgarden/10_cli.pct.py 66
 @config_app.command("show")
 def config_show():
     """Print the current configuration file."""
@@ -1087,7 +1113,7 @@ def config_show():
         raise typer.Exit()
     console.print(p.read_text())
 
-# %% pts/appgarden/10_cli.pct.py 67
+# %% pts/appgarden/10_cli.pct.py 68
 def app_main() -> None:
     """Entry point for the appgarden CLI."""
     try:

@@ -96,6 +96,7 @@ All fields from `[app]` are inherited by every environment unless overridden. Th
 | `meta` | Arbitrary metadata: `{ team = "backend", visibility = "internal" }` |
 | `created_at` | Explicit creation timestamp; overrides auto-generated value. Accepts `"2025-01-15"` (short date), full ISO 8601, or TOML native dates |
 | `updated_at` | Explicit update timestamp; same formats as `created_at` |
+| `repo` | Git repository URL; auto-detected from local source's `origin` remote if not set |
 
 **`[environments.<name>]` sections** — same fields as `[app]` plus:
 
