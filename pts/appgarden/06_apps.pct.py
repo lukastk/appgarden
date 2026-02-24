@@ -54,6 +54,7 @@ class AppInfo:
     routing: str
     port: int | None = None
     status: str | None = None
+    repo: str | None = None
 
 # %%
 #|export
@@ -68,6 +69,7 @@ def list_apps(host, ctx: RemoteContext | None = None) -> list[AppInfo]:
             url=entry.get("url", ""),
             routing=entry.get("routing", ""),
             port=entry.get("port"),
+            repo=entry.get("repo"),
         ))
     return apps
 
@@ -105,6 +107,7 @@ class AppStatus:
     source_type: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    repo: str | None = None
     meta: dict | None = None
 
 # %%
@@ -139,6 +142,7 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
         source_type=entry.get("source_type"),
         created_at=entry.get("created_at"),
         updated_at=entry.get("updated_at"),
+        repo=entry.get("repo"),
         meta=entry.get("meta"),
     )
 

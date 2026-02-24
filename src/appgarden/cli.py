@@ -659,6 +659,7 @@ app.add_typer(apps_app, name="apps")
 @apps_app.command("list")
 def apps_list(
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
+    short: bool = typer.Option(False, "--short", help="Hide repo column"),
 ):
     """List all deployed applications."""
     cfg = load_config()
@@ -681,9 +682,14 @@ def apps_list(
     table.add_column("Method")
     table.add_column("URL")
     table.add_column("Status")
+    if not short:
+        table.add_column("Repo")
 
     for a in apps:
-        table.add_row(a.name, a.method, a.url, a.status or "unknown")
+        if short:
+            table.add_row(a.name, a.method, a.url, a.status or "unknown")
+        else:
+            table.add_row(a.name, a.method, a.url, a.status or "unknown", a.repo or "")
 
     console.print(table)
 
@@ -723,6 +729,8 @@ def apps_status(
         table.add_row("Source", status.source)
     if status.source_type:
         table.add_row("Source Type", status.source_type)
+    if status.repo:
+        table.add_row("Repo", status.repo)
     if status.created_at:
         table.add_row("Created", status.created_at)
     if status.updated_at:
