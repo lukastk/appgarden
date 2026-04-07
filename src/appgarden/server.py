@@ -207,6 +207,9 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         if "group" not in skip:
             _run(host, f"chown -R root:appgarden {app_root}",
                  "Setting app root ownership", ctx=ctx)
+            if ctx.needs_sudo:
+                _run(host, f"usermod -aG appgarden {server.ssh_user}",
+                     "Adding user to appgarden group", ctx=ctx)
         elif ctx.needs_sudo:
             _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root}",
                  "Setting app root ownership", ctx=ctx)
