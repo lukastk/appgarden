@@ -29,7 +29,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from appgarden.remote import (
     APPGARDEN_ROOT, RemoteContext,
-    ssh_connect, read_remote_file, write_remote_file, write_system_file,
+    ssh_connect, read_remote_file, write_remote_file,
     run_remote_command, read_garden_state,
     privileged_systemctl, caddy_apps_dir, caddy_tunnels_dir,
     validate_domain, validate_url_path,
@@ -232,7 +232,7 @@ def deploy_caddy_config(
         )
         remote_path = _caddy_file_path(app_name, ctx)
 
-    write_system_file(host, remote_path, config, ctx=ctx)
+    write_remote_file(host, remote_path, config)
     privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
 # %% [markdown]
@@ -267,7 +267,7 @@ def remove_caddy_config(
         remote_path = _domain_caddy_file_path(domain, ctx)
         if apps:
             config = generate_caddy_config(domain=domain, apps=apps)
-            write_system_file(host, remote_path, config, ctx=ctx)
+            write_remote_file(host, remote_path, config)
         else:
             run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
     else:
