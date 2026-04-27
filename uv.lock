@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.11"
 
 [options]
-exclude-newer = "2026-04-16T16:30:09.602043Z"
+exclude-newer = "2026-04-20T10:26:19.817496Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -26,7 +26,7 @@ wheels = [
 
 [[package]]
 name = "appgarden"
-version = "0.1.8"
+version = "0.1.9"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
