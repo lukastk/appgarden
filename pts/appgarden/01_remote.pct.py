@@ -491,7 +491,7 @@ def upload_directory(
             extra_flags += ["--exclude", pattern]
 
     cmd = [
-        "rsync", "-az", "--delete",
+        "rsync", "-rlz", "--delete",
         *extra_flags,
         "-e", ssh_opts,
         local,
