@@ -301,10 +301,18 @@ def ssh_connect(server: ServerConfig, connect_timeout: int = 30, retries: int = 
 
 # %% pts/appgarden/01_remote.pct.py 28
 def read_remote_file(host, path: str) -> str:
-    """Read a text file from the remote server."""
+    """Read a text file from the remote server.
+
+    Raises FileNotFoundError if the file does not exist; RuntimeError on other failures.
+    """
     buf = BytesIO()
-    ok = host.get_file(remote_filename=path, filename_or_io=buf,
-                       print_output=False, print_input=False)
+    try:
+        ok = host.get_file(remote_filename=path, filename_or_io=buf,
+                           print_output=False, print_input=False)
+    except FileNotFoundError:
+        raise
+    except OSError as e:
+        raise RuntimeError(f"Failed to read remote file: {path}: {e}") from e
     if not ok:
         raise RuntimeError(f"Failed to read remote file: {path}")
     return buf.getvalue().decode("utf-8")

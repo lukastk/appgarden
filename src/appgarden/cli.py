@@ -30,6 +30,7 @@ from .environments import load_project_config, resolve_environment, resolve_all_
 from .tunnel import open_tunnel, close_tunnel, list_tunnels, cleanup_stale_tunnels
 
 # %% pts/appgarden/10_cli.pct.py 4
+import os
 import socket
 import subprocess
 
@@ -1020,11 +1021,36 @@ app.add_typer(tunnel_app, name="tunnel")
 # %% pts/appgarden/10_cli.pct.py 56
 @tunnel_app.command("open")
 def tunnel_open(
-    local_port: int = typer.Argument(help="Local port to expose"),
-    url: str = typer.Option(..., "--url", help="Public URL for the tunnel"),
+    local_port: Optional[int] = typer.Argument(None, help="Local port to expose (required unless --serve is used; with --serve a free port is picked automatically)"),
+    url: Optional[str] = typer.Option(None, "--url", help="Full public URL for the tunnel (auto-generated three-word subdomain under the server's domain if omitted)"),
+    subdomain: Optional[str] = typer.Option(None, "--subdomain", help="Subdomain under the server's domain, e.g. 'foo' -> 'foo.<server-domain>' (mutually exclusive with --url)"),
+    cmd: Optional[str] = typer.Option(None, "--cmd", help="Local command to run alongside the tunnel; killed (with its child process group) when the tunnel closes"),
+    serve: Optional[str] = typer.Option(None, "--serve", help="Local file or directory to serve over the tunnel (mutually exclusive with --cmd)"),
+    include: list[str] = typer.Option([], "--include", help="Glob (repeatable). With --serve <dir>, only files matching at least one --include are exposed; matched against the path-relative-to-root or any path component"),
+    exclude: list[str] = typer.Option([], "--exclude", help="Glob (repeatable). With --serve <dir>, files or directories matching any --exclude are hidden; matched against the path-relative-to-root or any path component"),
+    close_on_cmd_exit: bool = typer.Option(False, "--close-on-cmd-exit", help="Close the tunnel automatically when --cmd / --serve exits (default: keep tunnel up)"),
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Open a tunnel to expose a local port with HTTPS."""
+    if cmd and serve:
+        console.print("[red]Error:[/red] --cmd and --serve are mutually exclusive")
+        raise typer.Exit(code=1)
+    if (include or exclude) and not serve:
+        console.print("[red]Error:[/red] --include / --exclude only apply with --serve")
+        raise typer.Exit(code=1)
+    if url and subdomain:
+        console.print("[red]Error:[/red] --url and --subdomain are mutually exclusive")
+        raise typer.Exit(code=1)
+    if serve and not os.path.exists(os.path.expanduser(serve)):
+        console.print(f"[red]Error:[/red] --serve path does not exist: {serve}")
+        raise typer.Exit(code=1)
+    if (include or exclude) and serve and not os.path.isdir(os.path.expanduser(serve)):
+        console.print("[red]Error:[/red] --include / --exclude only apply when --serve points to a directory")
+        raise typer.Exit(code=1)
+    if local_port is None and not serve:
+        console.print("[red]Error:[/red] LOCAL_PORT is required unless --serve is used")
+        raise typer.Exit(code=1)
+
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -1032,7 +1058,15 @@ def tunnel_open(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
-    open_tunnel(srv, local_port, url)
+    if subdomain:
+        url = f"{subdomain}.{srv.domain}"
+
+    if local_port is None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
+            _s.bind(("127.0.0.1", 0))
+            local_port = _s.getsockname()[1]
+
+    open_tunnel(srv, local_port, url, cmd=cmd, serve=serve, include=include, exclude=exclude, close_on_cmd_exit=close_on_cmd_exit)
 
 # %% pts/appgarden/10_cli.pct.py 58
 @tunnel_app.command("list")
