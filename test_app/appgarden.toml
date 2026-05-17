@@ -9,3 +9,6 @@ subdomain = "{app.slug}"
 
 [environments.dev]
 subdomain = "{app.slug}-dev"
+
+[app.meta]
+description = "Test app for AppGarden"
