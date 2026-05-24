@@ -85,14 +85,32 @@ def _tunnel_caddy_path(tunnel_id: str, ctx: RemoteContext | None = None) -> str:
 
 # %% pts/appgarden/09_tunnel.pct.py 16
 def _deploy_tunnel_caddy(host, tunnel_id: str, domain: str, remote_port: int, ctx: RemoteContext | None = None) -> None:
-    """Deploy a temporary Caddy config for the tunnel."""
+    """Deploy a temporary Caddy config for the tunnel.
+
+    If the post-write `caddy reload` fails (e.g. because another snippet on the
+    server already claims the same site), the freshly-written snippet is
+    removed before re-raising so the remote state stays consistent. Without
+    this rollback every failed `tunnel open` would leave an orphan
+    `<tunnel_id>.caddy` file behind, and subsequent attempts against the same
+    URL would hit ``ambiguous site definition`` from Caddy and fail forever.
+    """
     config = generate_caddy_config(
         domain=domain,
         port=remote_port,
     )
     caddy_path = _tunnel_caddy_path(tunnel_id, ctx)
     write_remote_file(host, caddy_path, config)
-    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    try:
+        privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    except Exception:
+        # Roll back the snippet so the next attempt starts from a clean slate.
+        # Use rm -f so a missing file (e.g. someone cleaned it up out-of-band)
+        # doesn't mask the underlying reload failure.
+        try:
+            run_remote_command(host, f"rm -f {shlex.quote(caddy_path)}")
+        except Exception:
+            pass
+        raise
 
 # %% pts/appgarden/09_tunnel.pct.py 17
 def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None) -> None:
