@@ -25,6 +25,8 @@ import json
 from unittest.mock import MagicMock, patch
 from io import BytesIO
 
+import pytest
+
 from appgarden.config import ServerConfig
 from appgarden.tunnel import (
     _read_tunnels_state, _write_tunnels_state,
@@ -148,6 +150,35 @@ def test_remove_tunnel_caddy():
     cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
     assert any("rm -f" in c and "tunnel-abc.caddy" in c for c in cmds)
     assert any("reload caddy" in c for c in cmds)
+
+# %%
+#|export
+def test_deploy_tunnel_caddy_rolls_back_snippet_on_reload_failure():
+    """If `caddy reload` fails, the freshly-written snippet must be removed so
+    subsequent tunnel-open attempts on the same URL don't trip the
+    "ambiguous site definition" Caddy error from accumulated orphans."""
+    host = _mock_host()
+    ok_output = MagicMock(); ok_output.stdout = ""
+    fail_output = MagicMock(); fail_output.stdout = ""; fail_output.stderr = "Job for caddy.service failed."
+
+    def _reload_then_fail(*args, **kwargs):
+        cmd = kwargs.get("command", args[0] if args else "")
+        if "reload caddy" in cmd:
+            return (False, fail_output)
+        return (True, ok_output)
+
+    host.run_shell_command.side_effect = _reload_then_fail
+
+    with pytest.raises(RuntimeError, match="Remote command failed"):
+        _deploy_tunnel_caddy(host, "tunnel-xyz", "fail.example.com", 10001)
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    # snippet was written, reload was attempted, then the snippet was rm'd
+    assert any("reload caddy" in c for c in cmds), "expected a reload attempt"
+    assert any("rm -f" in c and "tunnel-xyz.caddy" in c for c in cmds), (
+        "expected the snippet to be rolled back after reload failed; "
+        f"saw: {cmds}"
+    )
 
 # %% [markdown]
 # ## Register / unregister
