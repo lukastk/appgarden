@@ -5,7 +5,7 @@
 {% if app.method == "static" %}
         root * {{ app.source_path }}
         file_server
-        try_files {path} /index.html
+        try_files {path} {path}/index.html /index.html
 {% else %}
         reverse_proxy localhost:{{ app.port }} {
             header_up X-Forwarded-Prefix "/{{ app.path }}"

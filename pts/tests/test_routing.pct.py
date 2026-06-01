@@ -105,7 +105,9 @@ def test_generate_subdomain_static():
     assert "docs.example.com" in config
     assert "file_server" in config
     assert "/srv/appgarden/apps/docs/source" in config
-    assert "try_files" in config
+    # Directory-index fallback so multi-page sites resolve /foo/ -> /foo/index.html
+    # before the SPA /index.html fallback (issue #11).
+    assert "try_files {path} {path}/index.html /index.html" in config
 
 # %% [markdown]
 # ## generate_caddy_config — subdirectory
@@ -150,6 +152,8 @@ def test_generate_subdirectory_static():
     assert "handle_path /docs/*" in config
     assert "file_server" in config
     assert "/srv/appgarden/apps/docs/source" in config
+    # Directory-index fallback for multi-page static sites (issue #11).
+    assert "try_files {path} {path}/index.html /index.html" in config
 
 # %% [markdown]
 # ## deploy_caddy_config
