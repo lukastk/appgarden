@@ -32,6 +32,7 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 from appgarden.remote import (
+    RemoteContext,
     read_ports_state, write_ports_state,
     read_ports_state_locked, write_ports_state_locked,
 )
@@ -111,34 +112,34 @@ def _register_port(ports: dict, port: int, app_name: str) -> dict:
 
 # %%
 #|export
-def allocate_port(host, app_name: str) -> int:
+def allocate_port(host, app_name: str, ctx: RemoteContext | None = None) -> int:
     """Allocate a port on the remote server for *app_name*."""
-    ports = read_ports_state_locked(host)
+    ports = read_ports_state_locked(host, ctx=ctx)
     ports, port = _allocate_port(ports, app_name)
-    write_ports_state_locked(host, ports)
+    write_ports_state_locked(host, ports, ctx=ctx)
     return port
 
 # %%
 #|export
-def release_port(host, app_name: str) -> None:
+def release_port(host, app_name: str, ctx: RemoteContext | None = None) -> None:
     """Release the port held by *app_name* on the remote server."""
-    ports = read_ports_state_locked(host)
+    ports = read_ports_state_locked(host, ctx=ctx)
     ports = _release_port(ports, app_name)
-    write_ports_state_locked(host, ports)
+    write_ports_state_locked(host, ports, ctx=ctx)
 
 # %%
 #|export
-def register_port(host, port: int, app_name: str) -> None:
+def register_port(host, port: int, app_name: str, ctx: RemoteContext | None = None) -> None:
     """Register a user-specified *port* for *app_name* on the remote server."""
-    ports = read_ports_state_locked(host)
+    ports = read_ports_state_locked(host, ctx=ctx)
     ports = _register_port(ports, port, app_name)
-    write_ports_state_locked(host, ports)
+    write_ports_state_locked(host, ports, ctx=ctx)
 
 # %%
 #|export
-def get_app_port(host, app_name: str) -> int | None:
+def get_app_port(host, app_name: str, ctx: RemoteContext | None = None) -> int | None:
     """Return the port allocated to *app_name*, or ``None`` if none."""
-    ports = read_ports_state(host)
+    ports = read_ports_state(host, ctx=ctx)
     for port_str, name in ports["allocated"].items():
         if name == app_name:
             return int(port_str)

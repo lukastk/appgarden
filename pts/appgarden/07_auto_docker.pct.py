@@ -203,7 +203,7 @@ def deploy_auto(
 
         # Allocate port
         if port is None:
-            port = allocate_port(host, name)
+            port = allocate_port(host, name, ctx=ctx)
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Generate and write Dockerfile
