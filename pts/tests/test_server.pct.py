@@ -23,10 +23,11 @@ from nblite import nbl_export; nbl_export();
 from unittest.mock import patch, MagicMock, call
 
 from appgarden.config import ServerConfig
+from appgarden.remote import RemoteContext
 from appgarden.server import (
     ping_server, init_server, INIT_STEPS,
     CADDYFILE_CONTENT, CADDYFILE_TEMPLATE, CADDYFILE_MARKER_BEGIN, CADDYFILE_MARKER_END,
-    SSH_HARDENING_CONTENT,
+    SSH_HARDENING_CONTENT, _ensure_caddyfile_block,
 )
 
 # %% [markdown]
@@ -299,6 +300,77 @@ def test_init_server_caddyfile_idempotent():
     assert caddyfile.count(CADDYFILE_MARKER_END) == 1
     # Existing content still preserved
     assert 'respond "Hello"' in caddyfile
+
+# %% [markdown]
+# ## Per-app_root managed block (issue #9 part 2)
+#
+# The managed block is keyed by `app_root` so multiple AppGarden instances on
+# one host coexist in /etc/caddy/Caddyfile — `server init` for one instance must
+# not clobber another's import lines.
+
+# %%
+#|export
+def _run_ensure_block(initial, app_roots):
+    """Drive `_ensure_caddyfile_block` for each app_root against an in-memory
+    Caddyfile (initial=None means the file doesn't exist yet). Returns the final
+    file content."""
+    file = {"content": initial}
+
+    def fake_cat(host, cmd, ctx=None):
+        if file["content"] is None:
+            raise RuntimeError("file not found")
+        return file["content"]
+
+    def fake_write(host, path, content, ctx=None):
+        file["content"] = content
+
+    with patch("appgarden.server.run_sudo_command", side_effect=fake_cat), \
+         patch("appgarden.server.write_system_file", side_effect=fake_write):
+        for root in app_roots:
+            ctx = RemoteContext(app_root=root)
+            _ensure_caddyfile_block(None, CADDYFILE_TEMPLATE.format(app_root=root), ctx=ctx)
+    return file["content"]
+
+# %%
+#|export
+def test_caddyfile_block_two_instances_coexist():
+    """Two app_roots keep independent keyed blocks; the second init keeps the first."""
+    content = _run_ensure_block(None, ["/srv/appgarden", "/srv/appgarden-proto"])
+    # Both instances' import lines survive
+    assert "import /srv/appgarden/caddy/apps/*.caddy" in content
+    assert "import /srv/appgarden-proto/caddy/apps/*.caddy" in content
+    # Two distinct keyed begin markers
+    assert "# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden\n" in content
+    assert "# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden-proto\n" in content
+    assert content.count(CADDYFILE_MARKER_BEGIN) == 2
+
+# %%
+#|export
+def test_caddyfile_block_reinit_replaces_only_that_root():
+    """Re-running init for one root replaces only its block, leaving the other intact."""
+    first = _run_ensure_block(None, ["/srv/appgarden", "/srv/appgarden-proto"])
+    again = _run_ensure_block(first, ["/srv/appgarden"])
+    assert again.count("# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden\n") == 1
+    assert again.count("# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden-proto\n") == 1
+    assert "import /srv/appgarden-proto/caddy/apps/*.caddy" in again
+
+# %%
+#|export
+def test_caddyfile_block_migrates_legacy_unkeyed():
+    """A pre-existing legacy un-keyed block is migrated in place for the default root."""
+    legacy = (
+        'example.com {\n    respond "Hi"\n}\n\n'
+        f"{CADDYFILE_MARKER_BEGIN}\n"
+        "import /srv/appgarden/caddy/apps/*.caddy\n"
+        "import /srv/appgarden/caddy/tunnels/*.caddy\n"
+        f"{CADDYFILE_MARKER_END}\n"
+    )
+    content = _run_ensure_block(legacy, ["/srv/appgarden"])
+    # Legacy block replaced in place (not duplicated) with the keyed form
+    assert "# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden" in content
+    assert content.count(CADDYFILE_MARKER_BEGIN) == 1
+    # Foreign content preserved
+    assert 'respond "Hi"' in content
 
 # %% [markdown]
 # ## State file preservation

@@ -99,16 +99,61 @@ def _run(host, cmd: str, label: str, ctx: RemoteContext | None = None, timeout: 
     run_sudo_command(host, cmd, ctx=ctx, timeout=timeout)
 
 # %%
+#|exporti
+def _caddyfile_markers(app_root: str) -> tuple[str, str]:
+    """Return the per-``app_root`` managed-block marker lines.
+
+    Keying the markers by ``app_root`` lets multiple AppGarden instances on one
+    host keep independent managed blocks in ``/etc/caddy/Caddyfile`` — running
+    ``server init`` for one instance no longer clobbers another's import lines.
+    """
+    return (
+        f"{CADDYFILE_MARKER_BEGIN}: {app_root}",
+        f"{CADDYFILE_MARKER_END}: {app_root}",
+    )
+
+# %%
+#|exporti
+def _find_managed_block(current: str, begin: str, end: str) -> tuple[int, int] | None:
+    """Locate the managed block delimited by exact *begin*/*end* marker lines.
+
+    Returns the ``(start, stop)`` character span covering the begin-marker line
+    through the newline after the end-marker line, or ``None`` if absent. Matching
+    is on whole stripped lines so a keyed marker (``... BLOCK: /srv/x``) is never
+    confused with the legacy un-keyed marker (``... BLOCK``), of which it is a
+    substring.
+    """
+    lines = current.splitlines(keepends=True)
+    begin_idx = None
+    offset = 0
+    starts = []
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == begin:
+            begin_idx = i
+        elif stripped == end and begin_idx is not None:
+            return starts[begin_idx], starts[i] + len(lines[i])
+    return None
+
+# %%
 #|export
 def _ensure_caddyfile_block(host, block_content: str, ctx: RemoteContext | None = None) -> None:
-    """Add or update the AppGarden managed block in /etc/caddy/Caddyfile.
+    """Add or update this instance's managed block in /etc/caddy/Caddyfile.
 
-    If the file doesn't exist or doesn't contain the markers, the block is
-    appended.  If the markers already exist, the content between them is
-    replaced.  Existing content outside the markers is never modified.
+    The block is keyed by ``ctx.app_root`` so several AppGarden instances coexist
+    in one Caddyfile.  If the file doesn't exist or has no matching block, the
+    block is appended; if it exists, the content between this instance's markers
+    is replaced.  Content outside the markers (including other instances' blocks)
+    is never modified.  For the default ``app_root`` a pre-existing legacy
+    un-keyed block is migrated in place.
     """
     caddyfile_path = "/etc/caddy/Caddyfile"
-    managed_block = f"{CADDYFILE_MARKER_BEGIN}\n{block_content}{CADDYFILE_MARKER_END}\n"
+    app_root = ctx.app_root if ctx is not None else APPGARDEN_ROOT
+    begin, end = _caddyfile_markers(app_root)
+    managed_block = f"{begin}\n{block_content}{end}\n"
 
     # Try to read existing Caddyfile
     try:
@@ -118,14 +163,15 @@ def _ensure_caddyfile_block(host, block_content: str, ctx: RemoteContext | None 
         write_system_file(host, caddyfile_path, managed_block, ctx=ctx)
         return
 
-    if CADDYFILE_MARKER_BEGIN in current:
-        # Replace existing block
-        before = current[:current.index(CADDYFILE_MARKER_BEGIN)]
-        after_marker = current[current.index(CADDYFILE_MARKER_END) + len(CADDYFILE_MARKER_END):]
-        # Strip leading newline from after_marker
-        if after_marker.startswith("\n"):
-            after_marker = after_marker[1:]
-        new_content = before + managed_block + after_marker
+    # Find this instance's keyed block; fall back to a legacy un-keyed block when
+    # migrating the default instance from a pre-multi-instance Caddyfile.
+    span = _find_managed_block(current, begin, end)
+    if span is None and app_root == APPGARDEN_ROOT:
+        span = _find_managed_block(current, CADDYFILE_MARKER_BEGIN, CADDYFILE_MARKER_END)
+
+    if span is not None:
+        start, stop = span
+        new_content = current[:start] + managed_block + current[stop:]
     else:
         # Append block to end
         new_content = current.rstrip("\n") + "\n\n" + managed_block if current.strip() else managed_block
