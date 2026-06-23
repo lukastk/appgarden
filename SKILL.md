@@ -74,6 +74,8 @@ Remote state and resources are under `app_root`, usually:
 
 `appgarden config show` prints the local config. Use `--server <name>` / `-s <name>` or `APPGARDEN_SERVER` on commands that target a server; otherwise AppGarden uses `default_server`.
 
+**Multiple instances on one host:** you can run several AppGarden instances on the same box by giving each a distinct `app_root` (e.g. `/srv/appgarden` and `/srv/appgarden-proto`). State (`garden.json`, `ports.json`), Caddy snippets, and the `/etc/caddy/Caddyfile` managed block are all keyed per `app_root`, so `server init` for one instance won't disturb another. One caveat: systemd unit and Docker container names are box-global (`appgarden-<name>`), so **app names must be unique across instances** on the same host.
+
 ## Server setup
 
 A server must be configured, reachable over SSH, and have DNS pointing at it.
