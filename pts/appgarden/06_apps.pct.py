@@ -284,7 +284,7 @@ def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | No
     # 3. Release port
     if entry.get("port") is not None:
         try:
-            release_port(host, name)
+            release_port(host, name, ctx=ctx)
         except ValueError:
             pass
 

@@ -22,13 +22,18 @@ from nblite import nbl_export; nbl_export();
 #|export
 import pytest
 
+import appgarden.ports as ports_mod
 from appgarden.ports import (
     PORT_RANGE_START,
     empty_ports_state,
     _allocate_port,
     _release_port,
     _register_port,
+    allocate_port,
+    release_port,
+    get_app_port,
 )
+from appgarden.remote import RemoteContext
 
 # %% [markdown]
 # ## empty_ports_state
@@ -142,3 +147,50 @@ def test_register_port_below_next():
     ports = {"next_port": 10010, "allocated": {}}
     ports = _register_port(ports, 10005, "app")
     assert ports["next_port"] == 10010
+
+# %% [markdown]
+# ## Remote-aware functions respect ctx.app_root
+#
+# These verify that `allocate_port` / `release_port` / `get_app_port` thread
+# the `ctx` (and therefore the target server's `app_root`) down to the state
+# accessors, so two AppGarden instances on one host keep independent ports.json
+# files instead of colliding on the default `/srv/appgarden/ports.json`.
+
+# %%
+#|export
+def test_allocate_port_respects_app_root(monkeypatch):
+    """allocate/get/release operate on per-app_root state, not a shared default."""
+    # In-memory ports.json keyed by app_root, standing in for the remote files.
+    stores: dict[str, dict] = {}
+
+    def _key(ctx):
+        return ctx.app_root if ctx is not None else "__default__"
+
+    def fake_read_locked(host, ctx=None):
+        return stores.setdefault(_key(ctx), empty_ports_state())
+
+    def fake_write_locked(host, state, ctx=None):
+        stores[_key(ctx)] = state
+
+    monkeypatch.setattr(ports_mod, "read_ports_state_locked", fake_read_locked)
+    monkeypatch.setattr(ports_mod, "write_ports_state_locked", fake_write_locked)
+    monkeypatch.setattr(ports_mod, "read_ports_state", fake_read_locked)
+
+    main_ctx = RemoteContext(app_root="/srv/appgarden")
+    proto_ctx = RemoteContext(app_root="/srv/appgarden-proto")
+
+    p_main = allocate_port(None, "app-a", ctx=main_ctx)
+    p_proto = allocate_port(None, "app-b", ctx=proto_ctx)
+
+    # Each app is recorded in its own instance's store, not the other's.
+    assert stores["/srv/appgarden"]["allocated"] == {str(p_main): "app-a"}
+    assert stores["/srv/appgarden-proto"]["allocated"] == {str(p_proto): "app-b"}
+
+    # get_app_port reads from the correct instance.
+    assert get_app_port(None, "app-a", ctx=main_ctx) == p_main
+    assert get_app_port(None, "app-a", ctx=proto_ctx) is None
+
+    # release_port only touches the targeted instance.
+    release_port(None, "app-a", ctx=main_ctx)
+    assert stores["/srv/appgarden"]["allocated"] == {}
+    assert stores["/srv/appgarden-proto"]["allocated"] == {str(p_proto): "app-b"}
