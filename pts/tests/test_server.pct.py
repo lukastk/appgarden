@@ -452,6 +452,26 @@ def test_init_server_reconciles_existing_app_ports():
     assert state["allocated"] == {"10000": "web", "10005": "api"}
     assert state["next_port"] == 10006
 
+# %%
+#|export
+def test_init_server_seeds_registry_from_legacy_ports():
+    """Creating the host registry seeds it from the legacy ports.json, preserving
+    reservations not in garden.json (e.g. an active tunnel's port)."""
+    # Host registry absent (state_files_exist=False); legacy ports.json holds a
+    # live tunnel reservation that garden.json doesn't know about.
+    legacy = {"next_port": 10061, "allocated": {"10060": "tunnel-abc"}}
+    host_mock = _make_host_mock(state_files_exist=False, ports_state=legacy)
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    written_files = _get_written_files(host_mock)
+    seeded = json.loads(written_files[PORTS_PATH])
+    assert seeded["allocated"].get("10060") == "tunnel-abc"
+    assert seeded["next_port"] == 10061
+
 # %% [markdown]
 # ## Step skipping
 
