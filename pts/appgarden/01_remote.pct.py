@@ -40,7 +40,15 @@ from appgarden.config import ServerConfig, resolve_host
 DEFAULT_APP_ROOT = "/srv/appgarden"
 APPGARDEN_ROOT = DEFAULT_APP_ROOT
 GARDEN_STATE_PATH = f"{APPGARDEN_ROOT}/garden.json"
-PORTS_PATH = f"{APPGARDEN_ROOT}/ports.json"
+
+# Port allocations are a box-global resource: every garden on a host shares the
+# same TCP port space, so the ports registry lives at one host-level path
+# (independent of any garden's app_root) and all gardens allocate from it under a
+# single lock. This is what stops two gardens on one host handing out the same
+# host port. (Garden state — garden.json — stays per-``app_root``.)
+HOST_STATE_DIR = "/var/lib/appgarden"
+PORTS_PATH = f"{HOST_STATE_DIR}/ports.json"
+HOST_PORTS_LOCK = f"{HOST_STATE_DIR}/.ports.lock"
 
 # %% [markdown]
 # ## RemoteContext
@@ -76,9 +84,9 @@ def garden_state_path(ctx: RemoteContext | None = None) -> str:
     root = ctx.app_root if ctx else DEFAULT_APP_ROOT
     return f"{root}/garden.json"
 
-def ports_path(ctx: RemoteContext | None = None) -> str:
-    root = ctx.app_root if ctx else DEFAULT_APP_ROOT
-    return f"{root}/ports.json"
+def ports_path() -> str:
+    """Path to the host-level shared ports registry (box-global, not per-garden)."""
+    return PORTS_PATH
 
 def caddy_apps_dir(ctx: RemoteContext | None = None) -> str:
     root = ctx.app_root if ctx else DEFAULT_APP_ROOT
@@ -442,9 +450,9 @@ def write_garden_state(host, state: dict, ctx: RemoteContext | None = None) -> N
 
 # %%
 #|export
-def read_ports_state(host, ctx: RemoteContext | None = None) -> dict:
-    """Read port allocations from ports.json."""
-    raw = read_remote_file(host, ports_path(ctx))
+def read_ports_state(host) -> dict:
+    """Read port allocations from the host-level ports.json."""
+    raw = read_remote_file(host, ports_path())
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
@@ -452,10 +460,10 @@ def read_ports_state(host, ctx: RemoteContext | None = None) -> dict:
 
 # %%
 #|export
-def write_ports_state(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write port allocations to ports.json."""
+def write_ports_state(host, state: dict) -> None:
+    """Write port allocations to the host-level ports.json."""
     content = json.dumps(state, indent=2)
-    write_remote_file(host, ports_path(ctx), content)
+    write_remote_file(host, ports_path(), content)
 
 # %% [markdown]
 # ## Directory upload
@@ -559,20 +567,20 @@ def write_garden_state_locked(host, state: dict, ctx: RemoteContext | None = Non
     write_remote_file(host, tmp, content)
     run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
 
-def read_ports_state_locked(host, ctx: RemoteContext | None = None) -> dict:
-    """Read ports state under flock."""
-    lock = _lock_path(ctx)
-    path = ports_path(ctx)
+def read_ports_state_locked(host) -> dict:
+    """Read the host-level ports state under flock (shared across all gardens)."""
+    lock = HOST_PORTS_LOCK
+    path = ports_path()
     raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Corrupted ports.json on server: {e}. You may need to re-run 'server init'.")
 
-def write_ports_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write ports state under flock (write tmp, then atomic mv under lock)."""
-    path = ports_path(ctx)
-    lock = _lock_path(ctx)
+def write_ports_state_locked(host, state: dict) -> None:
+    """Write the host-level ports state under flock (write tmp, then atomic mv)."""
+    path = ports_path()
+    lock = HOST_PORTS_LOCK
     content = json.dumps(state, indent=2)
     tmp = f"{path}.tmp"
     write_remote_file(host, tmp, content)

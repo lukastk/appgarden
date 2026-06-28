@@ -27,13 +27,14 @@ from pathlib import Path
 from rich.console import Console
 
 from appgarden.config import ServerConfig, resolve_host
-from appgarden.ports import empty_ports_state
+from appgarden.ports import empty_ports_state, merge_allocations
 from appgarden.remote import (
-    APPGARDEN_ROOT, GARDEN_STATE_PATH, PORTS_PATH,
+    APPGARDEN_ROOT, GARDEN_STATE_PATH, PORTS_PATH, HOST_STATE_DIR,
     PRIVILEGED_HELPER_PATH,
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
     run_sudo_command, write_system_file,
+    read_garden_state, read_ports_state_locked, write_ports_state_locked,
     garden_state_path, ports_path,
 )
 
@@ -259,12 +260,15 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
                  "Enabling unattended-upgrades", ctx=ctx)
 
         # 9. AppGarden directory structure (essential, idempotent)
+        # HOST_STATE_DIR holds the host-level shared ports registry (one per box,
+        # used by every garden); the rest is per-``app_root``.
         app_root = ctx.app_root
         dirs = [
             f"{app_root}/apps",
             f"{app_root}/caddy/apps",
             f"{app_root}/caddy/tunnels",
             f"{app_root}/tunnels",
+            HOST_STATE_DIR,
         ]
         _run(host, f"mkdir -p {' '.join(dirs)}", "Creating directory structure", ctx=ctx)
 
@@ -272,9 +276,9 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         if "group" not in skip:
             _run(host,
                  f"groupadd -f appgarden && "
-                 f"chgrp -R appgarden {app_root} && "
-                 f"chmod -R g+rwX {app_root} && "
-                 f"find {app_root} -type d -exec chmod g+s {{}} +",
+                 f"chgrp -R appgarden {app_root} {HOST_STATE_DIR} && "
+                 f"chmod -R g+rwX {app_root} {HOST_STATE_DIR} && "
+                 f"find {app_root} {HOST_STATE_DIR} -type d -exec chmod g+s {{}} +",
                  "Creating appgarden group", ctx=ctx)
 
         # 10b. Install privileged wrapper and sudoers entry (essential)
@@ -290,26 +294,47 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
 
         # 11. Set app root ownership for deploy users (essential)
         if "group" not in skip:
-            _run(host, f"chown -R root:appgarden {app_root}",
+            _run(host, f"chown -R root:appgarden {app_root} {HOST_STATE_DIR}",
                  "Setting app root ownership", ctx=ctx)
             if ctx.needs_sudo:
                 _run(host, f"usermod -aG appgarden {server.ssh_user}",
                      "Adding user to appgarden group", ctx=ctx)
         elif ctx.needs_sudo:
-            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root}",
+            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root} {HOST_STATE_DIR}",
                  "Setting app root ownership", ctx=ctx)
         if ctx.needs_sudo and "docker" not in skip:
             _run(host, f"usermod -aG docker {server.ssh_user}",
                  "Adding user to docker group", ctx=ctx)
 
-        # 11. Initialise state files (essential, but only if missing)
+        # 11. Initialise state files (essential)
+        # garden.json is per-garden — create only if missing so existing app
+        # registries are preserved.
         try:
             run_remote_command(host, f"test -f {shlex.quote(garden_state_path(ctx))}")
-            console.print("  [dim]State files already exist, preserving[/dim]")
+            console.print("  [dim]garden.json already exists, preserving[/dim]")
         except RuntimeError:
             write_remote_file(host, garden_state_path(ctx), json.dumps({"apps": {}}, indent=2))
-            write_remote_file(host, ports_path(ctx), json.dumps(empty_ports_state(), indent=2))
-            console.print("  [dim]Initialised state files[/dim]")
+            console.print("  [dim]Initialised garden.json[/dim]")
+
+        # ports.json is host-global (one shared registry per box). Ensure it
+        # exists, then reconcile this garden's already-deployed app ports into it.
+        # Running init on each garden migrates them all into the single registry;
+        # reconciling from garden.json (the authoritative per-garden state) is
+        # idempotent, so this is safe to run on every init.
+        try:
+            run_remote_command(host, f"test -f {shlex.quote(ports_path())}")
+        except RuntimeError:
+            write_remote_file(host, ports_path(), json.dumps(empty_ports_state(), indent=2))
+            console.print("  [dim]Initialised host ports registry[/dim]")
+        garden = read_garden_state(host, ctx=ctx)
+        allocations = {entry["port"]: name
+                       for name, entry in garden.get("apps", {}).items()
+                       if entry.get("port") is not None}
+        if allocations:
+            ports = read_ports_state_locked(host)
+            ports = merge_allocations(ports, allocations)
+            write_ports_state_locked(host, ports)
+            console.print(f"  [dim]Reconciled {len(allocations)} app port(s) into host registry[/dim]")
 
         # 12. Start Docker (conditional on docker being present)
         try:

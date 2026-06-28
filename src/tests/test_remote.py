@@ -180,7 +180,8 @@ def test_make_remote_context_custom_app_root():
 def test_path_functions_default():
     """Path functions return default paths when ctx is None."""
     assert garden_state_path() == f"{DEFAULT_APP_ROOT}/garden.json"
-    assert ports_path() == f"{DEFAULT_APP_ROOT}/ports.json"
+    # ports.json is host-global (box-level), not under app_root
+    assert ports_path() == PORTS_PATH == "/var/lib/appgarden/ports.json"
     assert caddy_apps_dir() == f"{DEFAULT_APP_ROOT}/caddy/apps"
     assert caddy_tunnels_dir() == f"{DEFAULT_APP_ROOT}/caddy/tunnels"
     assert app_dir(None, "myapp") == f"{DEFAULT_APP_ROOT}/apps/myapp"
@@ -189,10 +190,11 @@ def test_path_functions_default():
 
 # %% pts/tests/test_remote.pct.py 23
 def test_path_functions_custom_root():
-    """Path functions use custom app_root from ctx."""
+    """Per-garden path functions use custom app_root from ctx; ports stay host-global."""
     ctx = RemoteContext(app_root="/opt/garden")
     assert garden_state_path(ctx) == "/opt/garden/garden.json"
-    assert ports_path(ctx) == "/opt/garden/ports.json"
+    # ports.json is host-global — independent of app_root
+    assert ports_path() == "/var/lib/appgarden/ports.json"
     assert caddy_apps_dir(ctx) == "/opt/garden/caddy/apps"
     assert caddy_tunnels_dir(ctx) == "/opt/garden/caddy/tunnels"
     assert app_dir(ctx, "foo") == "/opt/garden/apps/foo"

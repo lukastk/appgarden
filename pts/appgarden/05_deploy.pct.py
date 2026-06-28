@@ -339,7 +339,7 @@ def deploy_command(
 
         # Allocate port
         if port is None:
-            port = allocate_port(host, name, ctx=ctx)
+            port = allocate_port(host, name)
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Write .env file
@@ -434,7 +434,7 @@ def deploy_docker_compose(
 
         # Allocate/register port
         if port is None:
-            port = allocate_port(host, name, ctx=ctx)
+            port = allocate_port(host, name)
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Write .env file
@@ -511,7 +511,7 @@ def deploy_dockerfile(
 
         # Allocate port
         if port is None:
-            port = allocate_port(host, name, ctx=ctx)
+            port = allocate_port(host, name)
         console.print(f"  [dim]Port: {port}[/dim]")
 
         # Build Docker image
