@@ -32,7 +32,6 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 from appgarden.remote import (
-    RemoteContext,
     read_ports_state, write_ports_state,
     read_ports_state_locked, write_ports_state_locked,
 )
@@ -105,41 +104,60 @@ def _register_port(ports: dict, port: int, app_name: str) -> dict:
         ports["next_port"] = port + 1
     return ports
 
+# %%
+#|export
+def merge_allocations(ports: dict, allocations: dict) -> dict:
+    """Merge ``{port: app_name}`` into a ports state, advancing ``next_port``.
+
+    Used to reconcile already-deployed app ports (e.g. from a garden's
+    ``garden.json``) into the shared host-level registry. Idempotent: re-merging
+    the same allocations is a no-op, so it is safe to run on every ``server init``.
+    """
+    next_port = ports.get("next_port", PORT_RANGE_START)
+    allocated = dict(ports.get("allocated", {}))
+    for port, name in allocations.items():
+        allocated[str(port)] = name
+        if int(port) >= next_port:
+            next_port = int(port) + 1
+    return {"next_port": next_port, "allocated": allocated}
+
 # %% [markdown]
 # ## Remote-aware functions
 #
-# These read from / write to the remote server via the host connection.
+# These read from / write to the shared host-level ports registry via the host
+# connection. Port allocations are box-global (every garden on a host shares the
+# same TCP port space), so these take no ``ctx`` — there is one registry per host.
 
 # %%
 #|export
-def allocate_port(host, app_name: str, ctx: RemoteContext | None = None) -> int:
-    """Allocate a port on the remote server for *app_name*."""
-    ports = read_ports_state_locked(host, ctx=ctx)
+def allocate_port(host, app_name: str) -> int:
+    """Allocate a port on the remote host for *app_name*."""
+    ports = read_ports_state_locked(host)
     ports, port = _allocate_port(ports, app_name)
-    write_ports_state_locked(host, ports, ctx=ctx)
+    write_ports_state_locked(host, ports)
     return port
 
 # %%
 #|export
-def release_port(host, app_name: str, ctx: RemoteContext | None = None) -> None:
-    """Release the port held by *app_name* on the remote server."""
-    ports = read_ports_state_locked(host, ctx=ctx)
+def release_port(host, app_name: str) -> None:
+    """Release the port held by *app_name* on the remote host."""
+    ports = read_ports_state_locked(host)
     ports = _release_port(ports, app_name)
-    write_ports_state_locked(host, ports, ctx=ctx)
+    write_ports_state_locked(host, ports)
 
 # %%
 #|export
-def register_port(host, port: int, app_name: str, ctx: RemoteContext | None = None) -> None:
-    """Register a user-specified *port* for *app_name* on the remote server."""
-    ports = read_ports_state_locked(host, ctx=ctx)
+def register_port(host, port: int, app_name: str) -> None:
+    """Register a user-specified *port* for *app_name* on the remote host."""
+    ports = read_ports_state_locked(host)
     ports = _register_port(ports, port, app_name)
-    write_ports_state_locked(host, ports, ctx=ctx)
+    write_ports_state_locked(host, ports)
 
 # %%
 #|export
-def get_app_port(host, app_name: str, ctx: RemoteContext | None = None) -> int | None:
+def get_app_port(host, app_name: str) -> int | None:
     """Return the port allocated to *app_name*, or ``None`` if none."""
-    ports = read_ports_state(host, ctx=ctx)
+    ports = read_ports_state(host)
     for port_str, name in ports["allocated"].items():
         if name == app_name:
             return int(port_str)

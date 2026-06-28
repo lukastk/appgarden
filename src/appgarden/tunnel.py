@@ -149,7 +149,7 @@ def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str, ctx: Re
     with ssh_connect(server) as host:
         _remove_tunnel_caddy(host, tunnel_id, ctx=ctx)
         try:
-            release_port(host, app_name, ctx=ctx)
+            release_port(host, app_name)
         except (ValueError, RuntimeError):
             pass
         _unregister_tunnel(host, tunnel_id, ctx=ctx)
@@ -271,7 +271,7 @@ def open_tunnel(
 
     # 1. Allocate port and set up Caddy
     with ssh_connect(server) as host:
-        remote_port = allocate_port(host, app_name, ctx=ctx)
+        remote_port = allocate_port(host, app_name)
         _deploy_tunnel_caddy(host, tunnel_id, url, remote_port, ctx=ctx)
         _register_tunnel(host, tunnel_id, url, local_port, remote_port, ctx=ctx)
 

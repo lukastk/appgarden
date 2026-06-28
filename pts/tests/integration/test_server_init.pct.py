@@ -94,9 +94,9 @@ def test_garden_json(initialized_server):
 # %%
 #|export
 def test_ports_json(initialized_server):
-    """ports.json is initialised."""
+    """ports.json is initialised at the host-level shared path."""
     with ssh_connect(initialized_server) as host:
-        raw = read_remote_file(host, "/srv/appgarden/ports.json")
+        raw = read_remote_file(host, "/var/lib/appgarden/ports.json")
         data = json.loads(raw)
         assert "next_port" in data
         assert "allocated" in data

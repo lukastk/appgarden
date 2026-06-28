@@ -20,10 +20,12 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
+import json
 from unittest.mock import patch, MagicMock, call
 
 from appgarden.config import ServerConfig
-from appgarden.remote import RemoteContext
+from appgarden.remote import RemoteContext, PORTS_PATH
+from appgarden.ports import empty_ports_state
 from appgarden.server import (
     ping_server, init_server, INIT_STEPS,
     CADDYFILE_CONTENT, CADDYFILE_TEMPLATE, CADDYFILE_MARKER_BEGIN, CADDYFILE_MARKER_END,
@@ -43,28 +45,47 @@ def _make_server():
 
 # %%
 #|export
-def _make_host_mock(*, state_files_exist=True, caddyfile_content=""):
-    """Create a host mock with configurable behavior for test -f and cat commands."""
+def _make_host_mock(*, state_files_exist=True, caddyfile_content="",
+                    garden_state=None, ports_state=None):
+    """Create a host mock with configurable behavior for test -f and cat commands.
+
+    Serves valid JSON for garden.json / ports.json reads (via flock-cat and
+    get_file) so the init reconcile step (read garden.json → merge app ports into
+    the host ports registry) works against the mock.
+    """
+    if garden_state is None:
+        garden_state = {"apps": {}}
+    if ports_state is None:
+        ports_state = empty_ports_state()
+
     host_mock = MagicMock()
     ok_output = MagicMock()
     ok_output.stdout = ""
     fail_output = MagicMock()
     fail_output.stderr = ""
 
-    cat_output = MagicMock()
-    cat_output.stdout = caddyfile_content
-
     def run_shell_side_effect(**kwargs):
         cmd = kwargs.get("command", "")
         if cmd.startswith("test -f") and not state_files_exist:
             return (False, fail_output)
         if cmd.startswith("cat /etc/caddy/Caddyfile"):
-            return (True, cat_output)
+            out = MagicMock(); out.stdout = caddyfile_content
+            return (True, out)
+        if "flock" in cmd and "cat" in cmd:
+            out = MagicMock()
+            out.stdout = json.dumps(ports_state if "ports.json" in cmd else garden_state)
+            return (True, out)
         return (True, ok_output)
 
     host_mock.run_shell_command.side_effect = run_shell_side_effect
+
+    def _get_file(remote_filename, filename_or_io, **kw):
+        data = ports_state if "ports.json" in remote_filename else garden_state
+        filename_or_io.write(json.dumps(data).encode("utf-8"))
+        return True
+
     host_mock.put_file.return_value = True
-    host_mock.get_file.return_value = True
+    host_mock.get_file.side_effect = _get_file
     return host_mock
 
 # %%
@@ -160,7 +181,8 @@ def test_init_server_writes_config_files():
     assert "PasswordAuthentication no" in written_files["/etc/ssh/sshd_config.d/hardening.conf"]
 
     assert "/srv/appgarden/garden.json" in written_files
-    assert "/srv/appgarden/ports.json" in written_files
+    # ports.json is host-global, written under HOST_STATE_DIR (not app_root)
+    assert PORTS_PATH in written_files
 
 # %% [markdown]
 # ## init_server with non-root user
@@ -244,9 +266,10 @@ def test_init_server_custom_app_root():
     assert "/opt/myapps" in caddyfile
     assert CADDYFILE_MARKER_BEGIN in caddyfile
 
-    # State files should be at custom root
+    # garden.json is at the custom root; ports.json is host-global (box-level)
     assert "/opt/myapps/garden.json" in written_files
-    assert "/opt/myapps/ports.json" in written_files
+    assert "/opt/myapps/ports.json" not in written_files
+    assert PORTS_PATH in written_files
 
 # %% [markdown]
 # ## Additive Caddyfile
@@ -387,14 +410,15 @@ def test_init_server_preserves_existing_state_files():
         init_server(_make_server())
 
     written_files = _get_written_files(host_mock)
-    # State files should NOT be written when they already exist
+    # Existing state files are preserved (not rewritten). garden.json is empty,
+    # so the host ports registry needs no reconcile write either.
     assert "/srv/appgarden/garden.json" not in written_files
-    assert "/srv/appgarden/ports.json" not in written_files
+    assert PORTS_PATH not in written_files
 
 # %%
 #|export
 def test_init_server_creates_state_files_when_missing():
-    """Missing state files are created."""
+    """Missing state files are created (garden.json per-garden, ports.json host-global)."""
     host_mock = _make_host_mock(state_files_exist=False)
 
     with patch("appgarden.server.ssh_connect") as mock_connect:
@@ -404,7 +428,29 @@ def test_init_server_creates_state_files_when_missing():
 
     written_files = _get_written_files(host_mock)
     assert "/srv/appgarden/garden.json" in written_files
-    assert "/srv/appgarden/ports.json" in written_files
+    assert PORTS_PATH in written_files
+
+# %%
+#|export
+def test_init_server_reconciles_existing_app_ports():
+    """init merges this garden's already-deployed app ports into the host registry."""
+    garden = {"apps": {"web": {"port": 10000}, "api": {"port": 10005}}}
+    host_mock = _make_host_mock(state_files_exist=True, garden_state=garden,
+                                ports_state=empty_ports_state())
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    # The reconciled host registry is written back with both app ports.
+    written_files = _get_written_files(host_mock)
+    # write_ports_state_locked writes a tmp file then mv's it into place
+    tmp = next((c for p, c in written_files.items() if p.startswith(PORTS_PATH)), None)
+    assert tmp is not None, f"expected a host ports.json write, got {list(written_files)}"
+    state = json.loads(tmp)
+    assert state["allocated"] == {"10000": "web", "10005": "api"}
+    assert state["next_port"] == 10006
 
 # %% [markdown]
 # ## Step skipping
