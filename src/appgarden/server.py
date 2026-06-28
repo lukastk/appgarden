@@ -15,7 +15,7 @@ from .remote import (
     APPGARDEN_ROOT, GARDEN_STATE_PATH, PORTS_PATH, HOST_STATE_DIR,
     PRIVILEGED_HELPER_PATH,
     RemoteContext, make_remote_context,
-    ssh_connect, run_remote_command, write_remote_file,
+    ssh_connect, run_remote_command, read_remote_file, write_remote_file,
     run_sudo_command, write_system_file,
     read_garden_state, read_ports_state_locked, write_ports_state_locked,
     garden_state_path, ports_path,
@@ -283,7 +283,19 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         try:
             run_remote_command(host, f"test -f {shlex.quote(ports_path())}")
         except RuntimeError:
-            write_remote_file(host, ports_path(), json.dumps(empty_ports_state(), indent=2))
+            # First creation of the host registry on this box: seed it from this
+            # garden's legacy per-app_root ports.json (pre-shared-registry). That
+            # captures reservations that aren't in garden.json — notably active
+            # tunnel ports — so a later deploy can't collide with them.
+            seed = empty_ports_state()
+            legacy_ports_path = f"{ctx.app_root}/ports.json"
+            try:
+                legacy = json.loads(read_remote_file(host, legacy_ports_path))
+                seed = merge_allocations(
+                    seed, {int(p): n for p, n in legacy.get("allocated", {}).items()})
+            except (FileNotFoundError, RuntimeError, json.JSONDecodeError):
+                pass
+            write_remote_file(host, ports_path(), json.dumps(seed, indent=2))
             console.print("  [dim]Initialised host ports registry[/dim]")
         garden = read_garden_state(host, ctx=ctx)
         allocations = {entry["port"]: name
