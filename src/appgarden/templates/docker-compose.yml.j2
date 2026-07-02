@@ -2,7 +2,13 @@ services:
   app:
     build: .
     ports:
-      - "{{ port }}:{{ container_port }}"
+      # Bind the published port to loopback only. AppGarden apps are always
+      # fronted by Caddy over localhost, so they never need to be reachable on
+      # the host's public interface. Omitting the 127.0.0.1 prefix binds
+      # 0.0.0.0, which on a public box exposes the app (and, for compose apps,
+      # databases) straight to the internet — Docker publishes through iptables
+      # and bypasses ufw. (See BSI/Hetzner abuse report, 2026-06-30.)
+      - "127.0.0.1:{{ port }}:{{ container_port }}"
     restart: unless-stopped
 {% if env_file %}
     env_file:

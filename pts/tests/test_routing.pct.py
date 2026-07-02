@@ -348,7 +348,7 @@ def test_render_docker_compose_template():
         env_file=".env",
         volumes=None,
     )
-    assert "10000:3000" in content
+    assert "127.0.0.1:10000:3000" in content  # published port MUST bind loopback only (Caddy fronts it); never 0.0.0.0
     assert "restart: unless-stopped" in content
 
 # %%
