@@ -173,14 +173,18 @@ def test_deploy_caddy_config_subdomain():
         garden_state={"apps": {}},
     )
 
-    # Should have written a file
+    # Staged via a unique tmp file, then mv'd into place (never written in
+    # place — issue #18 ownership class)
     put_calls = host.put_file.call_args_list
     assert len(put_calls) == 1
     remote_path = put_calls[0].kwargs["remote_filename"]
-    assert remote_path == _caddy_file_path("myapp")
+    final_path = _caddy_file_path("myapp")
+    assert remote_path.startswith(f"{final_path}.tmp.")
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("mv" in c and final_path in c for c in cmds)
 
     # Should have reloaded Caddy
-    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
     assert any("reload" in c and "caddy" in c for c in cmds)
 
 # %%
@@ -209,17 +213,85 @@ def test_deploy_caddy_config_subdirectory():
         garden_state=garden_state,
     )
 
-    # Should write a merged domain config
+    # Should write a merged domain config (staged via tmp + mv)
     put_calls = host.put_file.call_args_list
     assert len(put_calls) == 1
     remote_path = put_calls[0].kwargs["remote_filename"]
-    assert remote_path == _domain_caddy_file_path("apps.example.com")
+    assert remote_path.startswith(f"{_domain_caddy_file_path('apps.example.com')}.tmp.")
 
     # The written content should contain both apps
     bio = put_calls[0].kwargs["filename_or_io"]
     content = bio.getvalue().decode("utf-8")
     assert "handle_path /existing/*" in content
     assert "handle_path /newapp/*" in content
+
+# %%
+#|export
+def test_deploy_caddy_config_restores_previous_on_reload_failure():
+    """A failed reload restores the previous snippet content (issue #23).
+
+    A redeploy replaces a *working* snippet; if the new config makes the
+    reload fail, just deleting the file would take the app down — the
+    previous content must come back, and the reload error must propagate."""
+    host = MagicMock()
+    host.put_file.return_value = True
+
+    def _get(remote_filename, filename_or_io, **kw):
+        filename_or_io.write(b"old working config")
+        return True
+    host.get_file.side_effect = _get
+
+    ok_out = MagicMock(); ok_out.stdout = ""
+    fail_out = MagicMock(); fail_out.stdout = ""; fail_out.stderr = "ambiguous site definition"
+
+    def _run(command="", **kw):
+        if "reload" in command and "caddy" in command:
+            return (False, fail_out)
+        return (True, ok_out)
+    host.run_shell_command.side_effect = _run
+
+    with pytest.raises(RuntimeError, match="Remote command failed"):
+        deploy_caddy_config(
+            host, app_name="myapp", domain="myapp.apps.example.com", port=10000,
+            garden_state={"apps": {}},
+        )
+
+    # Two staged writes: the new config, then the restored previous content
+    staged = [c.kwargs["filename_or_io"].getvalue().decode("utf-8")
+              for c in host.put_file.call_args_list]
+    assert len(staged) == 2
+    assert staged[-1] == "old working config"
+    # Both staged files were mv'd toward the final snippet path
+    final_path = _caddy_file_path("myapp")
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert sum(1 for c in cmds if "mv" in c and final_path in c) == 2
+
+# %%
+#|export
+def test_deploy_caddy_config_removes_fresh_snippet_on_reload_failure():
+    """When there was no previous snippet, a failed reload removes the new one."""
+    host = MagicMock()
+    host.put_file.return_value = True
+    host.get_file.side_effect = FileNotFoundError("no previous snippet")
+
+    ok_out = MagicMock(); ok_out.stdout = ""
+    fail_out = MagicMock(); fail_out.stdout = ""; fail_out.stderr = "boom"
+
+    def _run(command="", **kw):
+        if "reload" in command and "caddy" in command:
+            return (False, fail_out)
+        return (True, ok_out)
+    host.run_shell_command.side_effect = _run
+
+    with pytest.raises(RuntimeError, match="Remote command failed"):
+        deploy_caddy_config(
+            host, app_name="myapp", domain="myapp.apps.example.com", port=10000,
+            garden_state={"apps": {}},
+        )
+
+    final_path = _caddy_file_path("myapp")
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("rm -f" in c and final_path in c for c in cmds)
 
 # %% [markdown]
 # ## remove_caddy_config

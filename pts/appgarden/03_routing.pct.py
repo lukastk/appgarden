@@ -23,9 +23,11 @@ from nblite import nbl_export; nbl_export();
 #|export
 import re
 import shlex
+import uuid
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
+from rich.console import Console
 
 from appgarden.remote import (
     APPGARDEN_ROOT, RemoteContext,
@@ -35,6 +37,8 @@ from appgarden.remote import (
     validate_domain, validate_url_path,
 )
 from appgarden.config import ServerConfig
+
+console = Console()
 
 # %%
 #|export
@@ -154,6 +158,55 @@ def generate_caddy_config(
 
 # %%
 #|export
+def _write_caddy_snippet(host, path: str, content: str) -> None:
+    """Replace a Caddy snippet via a unique tmp + atomic mv.
+
+    mv needs only directory write permission, so the snippet's file ownership
+    never matters — a direct SFTP overwrite would let whichever server entry
+    (root vs deploy user) wrote it last lock the other out (issue #18 class).
+    """
+    tmp = f"{path}.tmp.{uuid.uuid4().hex[:8]}"
+    write_remote_file(host, tmp, content)
+    run_remote_command(host, f"mv {shlex.quote(tmp)} {shlex.quote(path)}")
+
+# %%
+#|export
+def replace_snippet_and_reload(host, path: str, content: str | None,
+                               ctx: RemoteContext | None = None) -> None:
+    """Write (or, with ``content=None``, remove) a Caddy snippet and reload Caddy,
+    restoring the previous snippet if the reload fails.
+
+    Without the rollback, a snippet that Caddy rejects (e.g. a URL already
+    claimed by another garden — "ambiguous site definition") would stay on
+    disk and break every subsequent reload on the box. Restoring the previous
+    content (rather than just deleting) matters for redeploys, which replace
+    an existing, working snippet.
+    """
+    try:
+        previous = read_remote_file(host, path)
+    except FileNotFoundError:
+        previous = None
+
+    if content is None:
+        run_remote_command(host, f"rm -f {shlex.quote(path)}")
+    else:
+        _write_caddy_snippet(host, path, content)
+
+    try:
+        privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    except Exception:
+        # Best-effort rollback; the original reload error is what must surface.
+        try:
+            if previous is None:
+                run_remote_command(host, f"rm -f {shlex.quote(path)}")
+            else:
+                _write_caddy_snippet(host, path, previous)
+        except Exception as rollback_err:
+            console.print(f"[yellow]Warning:[/yellow] failed to roll back Caddy snippet {path}: {rollback_err}")
+        raise
+
+# %%
+#|export
 def _caddy_file_path(app_name: str, ctx: RemoteContext | None = None) -> str:
     """Return the remote path for an app's Caddy config."""
     return f"{caddy_apps_dir(ctx)}/{app_name}.caddy"
@@ -243,8 +296,7 @@ def deploy_caddy_config(
         )
         remote_path = _caddy_file_path(app_name, ctx)
 
-    write_remote_file(host, remote_path, config)
-    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    replace_snippet_and_reload(host, remote_path, config, ctx=ctx)
 
 # %% [markdown]
 # ## remove_caddy_config
@@ -276,17 +328,13 @@ def remove_caddy_config(
                 if a["name"] != app_name]
 
         remote_path = _domain_caddy_file_path(domain, ctx)
-        if apps:
-            config = generate_caddy_config(domain=domain, apps=apps)
-            write_remote_file(host, remote_path, config)
-        else:
-            run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
+        config = generate_caddy_config(domain=domain, apps=apps) if apps else None
     else:
         # Subdomain: just remove the file
         remote_path = _caddy_file_path(app_name, ctx)
-        run_remote_command(host, f"rm -f {shlex.quote(remote_path)}")
+        config = None
 
-    privileged_systemctl(host, "reload", "caddy", ctx=ctx)
+    replace_snippet_and_reload(host, remote_path, config, ctx=ctx)
 
 # %% [markdown]
 # ## Template rendering helpers

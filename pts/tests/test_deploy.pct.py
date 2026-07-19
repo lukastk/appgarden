@@ -145,7 +145,7 @@ def test_deploy_static_subdomain():
             written[path] = bio.getvalue().decode("utf-8")
 
     # Should have written a Caddy config
-    caddy_files = [p for p in written if p.endswith(".caddy")]
+    caddy_files = [p for p in written if ".caddy" in p]
     assert len(caddy_files) == 1
     caddy_content = written[caddy_files[0]]
     assert "mysite.apps.example.com" in caddy_content
@@ -189,7 +189,7 @@ def test_deploy_static_subdirectory():
     assert garden["apps"]["docs"]["routing"] == "subdirectory"
 
     # Caddy config should use handle_path
-    caddy_files = [p for p in written if p.endswith(".caddy")]
+    caddy_files = [p for p in written if ".caddy" in p]
     assert len(caddy_files) == 1
     caddy_content = written[caddy_files[0]]
     assert "handle_path /docs/*" in caddy_content

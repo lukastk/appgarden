@@ -58,6 +58,9 @@ def _mock_host(tunnels_state=None, ports_state=None):
     host.put_file.return_value = True
 
     def _mock_get(remote_filename, filename_or_io, **kw):
+        if remote_filename.endswith(".caddy"):
+            # Fresh tunnel snippets don't exist yet (previous-content probe)
+            raise FileNotFoundError(remote_filename)
         if "tunnels/active.json" in remote_filename:
             data = tunnels_state
         elif "ports.json" in remote_filename:
@@ -141,7 +144,7 @@ def test_deploy_tunnel_caddy():
         if bio:
             written[path] = bio.getvalue().decode("utf-8")
 
-    caddy_files = [p for p in written if p.endswith(".caddy")]
+    caddy_files = [p for p in written if ".caddy" in p]
     assert len(caddy_files) >= 1
     caddy_content = written[caddy_files[0]]
     assert "test.example.com" in caddy_content
