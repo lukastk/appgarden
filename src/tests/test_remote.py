@@ -568,10 +568,12 @@ def test_privileged_install_unit_nonroot():
     ctx = RemoteContext(needs_sudo=True)
     privileged_install_unit(host, "appgarden-myapp.service", "[Unit]\nDescription=test", ctx=ctx)
 
-    # Temp file written via put_file
+    # Temp file written via put_file, at an unpredictable (random-suffix) path
+    # so another local user can't pre-create it (issue #21)
+    import re as _re
     host.put_file.assert_called_once()
     tmp_path = host.put_file.call_args.kwargs["remote_filename"]
-    assert tmp_path.startswith("/tmp/appgarden-unit-")
+    assert _re.fullmatch(r"/tmp/appgarden-unit-[0-9a-f]{32}\.tmp", tmp_path), tmp_path
 
     # Wrapper called with install-unit
     cmd = host.run_shell_command.call_args_list[1].kwargs["command"]

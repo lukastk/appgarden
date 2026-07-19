@@ -220,8 +220,11 @@ def server_init_cmd(
      14. services   - Start Docker & Caddy
 
     For non-root SSH users, a privileged wrapper script is installed at
-    /usr/local/bin/appgarden-privileged with a matching sudoers entry,
-    restricting sudo access to only appgarden-scoped operations.
+    /usr/local/bin/appgarden-privileged with a matching sudoers entry. It
+    scopes routine sudo use to appgarden operations (appgarden-* units,
+    caddy reload), but note it installs caller-provided unit files that run
+    as root — members of the appgarden group are effectively root-equivalent,
+    so only add trusted deploy users.
 
     Use --minimal to skip all optional steps.
     """

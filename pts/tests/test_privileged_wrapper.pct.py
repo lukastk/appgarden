@@ -21,17 +21,20 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
+import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 WRAPPER_SCRIPT = Path(__file__).resolve().parent.parent / "appgarden" / "templates" / "appgarden-privileged"
 
-def _run_wrapper(*args: str) -> subprocess.CompletedProcess:
+def _run_wrapper(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     """Run the wrapper script with given arguments, returning the result."""
+    env = {**os.environ, **(env_extra or {})}
     return subprocess.run(
         [sys.executable, str(WRAPPER_SCRIPT), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
 
 # %% [markdown]
@@ -170,6 +173,66 @@ def test_install_unit_nonexistent_temp():
                      "/tmp/appgarden-unit-nonexistent-12345.tmp")
     assert r.returncode != 0
     assert "does not exist" in r.stderr
+
+# %%
+#|export
+def test_install_unit_rejects_symlink_temp():
+    """install-unit rejects a symlink staged at the temp path.
+
+    A local attacker could pre-create the staging path as a symlink; the
+    wrapper must lstat and require a regular file (issue #21)."""
+    link = f"/tmp/appgarden-unit-{uuid.uuid4().hex}.tmp"
+    target = f"/tmp/appgarden-unit-{uuid.uuid4().hex}.target"
+    with open(target, "w") as f:
+        f.write("[Unit]\n")
+    os.symlink(target, link)
+    try:
+        r = _run_wrapper("install-unit", "appgarden-foo.service", link)
+        assert r.returncode != 0
+        assert "not a regular file" in r.stderr
+    finally:
+        os.unlink(link)
+        os.unlink(target)
+
+# %%
+#|export
+def test_install_unit_rejects_foreign_owner():
+    """install-unit rejects a temp file not owned by the invoking sudo user.
+
+    /tmp is world-writable: without an ownership check, any local user could
+    pre-create the staging path and have their content installed as a root
+    unit (issue #21). SUDO_UID identifies the invoking user; here we fake a
+    different one to simulate a foreign-owned file."""
+    tmp = f"/tmp/appgarden-unit-{uuid.uuid4().hex}.tmp"
+    with open(tmp, "w") as f:
+        f.write("[Unit]\n")
+    try:
+        r = _run_wrapper("install-unit", "appgarden-foo.service", tmp,
+                         env_extra={"SUDO_UID": str(os.getuid() + 1)})
+        assert r.returncode != 0
+        assert "owned by uid" in r.stderr
+    finally:
+        os.unlink(tmp)
+
+# %%
+#|export
+def test_install_unit_accepts_owner_match_until_copy():
+    """With matching ownership, install-unit passes validation (it then fails
+    only at the privileged copy into /etc/systemd/system, which an unprivileged
+    test run cannot perform)."""
+    tmp = f"/tmp/appgarden-unit-{uuid.uuid4().hex}.tmp"
+    with open(tmp, "w") as f:
+        f.write("[Unit]\nDescription=test\n")
+    try:
+        r = _run_wrapper("install-unit", "appgarden-foo.service", tmp,
+                         env_extra={"SUDO_UID": str(os.getuid())})
+        # Validation passed: any failure is the unprivileged copy, not a rejection
+        assert "not a regular file" not in r.stderr
+        assert "owned by uid" not in r.stderr
+        assert "does not exist" not in r.stderr
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 # %% [markdown]
 # ## remove-unit validation

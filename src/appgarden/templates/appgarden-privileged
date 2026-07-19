@@ -4,13 +4,22 @@
 Installed at /usr/local/bin/appgarden-privileged during `appgarden server init`.
 Called via: sudo /usr/local/bin/appgarden-privileged <command> [args...]
 
-Restricts privileged operations to appgarden-scoped resources only.
-All inputs are validated; no shell interpretation is used.
+Scopes privileged operations to appgarden resources (appgarden-* units, caddy
+reload) so routine deploys don't need broad sudo, and validates all inputs
+with no shell interpretation. NOTE: this is a guard against accidents, not a
+security boundary between deploy users and root — `install-unit` installs
+caller-provided unit files whose ExecStart runs as root, so members of the
+appgarden group are effectively root-equivalent. Only add trusted users.
+
+What IS enforced: the staged temp file must be a regular file (no symlinks)
+owned by the invoking sudo user, so an unrelated local user can't pre-create
+or swap the file to get their own unit installed as root.
 """
 
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -75,8 +84,22 @@ def cmd_install_unit(args):
         die(f"install-unit: temp file must be under {TEMP_PREFIX}")
     if ".." in temp_file:
         die(f"install-unit: path traversal in temp file: {temp_file}")
-    if not os.path.isfile(temp_file):
+
+    # The temp file must be a regular file (no symlinks) owned by the invoking
+    # sudo user. /tmp is world-writable, so without this check any local user
+    # could pre-create the (guessable-prefix) staging path and have their own
+    # content installed as a root systemd unit.
+    try:
+        st = os.lstat(temp_file)
+    except FileNotFoundError:
         die(f"install-unit: temp file does not exist: {temp_file}")
+    if not stat.S_ISREG(st.st_mode):
+        die(f"install-unit: temp file is not a regular file: {temp_file}")
+    sudo_uid = os.environ.get("SUDO_UID")
+    expected_uid = int(sudo_uid) if sudo_uid is not None else os.getuid()
+    if st.st_uid != expected_uid:
+        die(f"install-unit: temp file is owned by uid {st.st_uid}, "
+            f"expected the invoking user (uid {expected_uid})")
 
     dest = os.path.join(SYSTEMD_DIR, name)
     shutil.copy2(temp_file, dest)

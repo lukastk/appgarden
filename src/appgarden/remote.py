@@ -208,9 +208,12 @@ def privileged_install_unit(host, name: str, content: str,
         write_system_file(host, unit_path, content, ctx=ctx)
         return
 
-    # Non-root: write temp file, then call wrapper
+    # Non-root: write temp file, then call wrapper. The random suffix keeps the
+    # staging path unpredictable so another local user can't pre-create it (the
+    # wrapper additionally verifies the file is a regular file owned by the
+    # invoking user before installing it as a root unit).
     _require_privileged_helper(host, ctx)
-    temp_path = f"/tmp/appgarden-unit-{name}.tmp"
+    temp_path = f"/tmp/appgarden-unit-{uuid.uuid4().hex}.tmp"
     write_remote_file(host, temp_path, content)
     run_remote_command(host, f"sudo {PRIVILEGED_HELPER_PATH} install-unit {shlex.quote(name)} {shlex.quote(temp_path)}")
 
