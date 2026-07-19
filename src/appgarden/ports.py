@@ -49,12 +49,13 @@ def _release_port(ports: dict, app_name: str) -> dict:
 def _register_port(ports: dict, port: int, app_name: str) -> dict:
     """Register a specific *port* for *app_name* (e.g. user-specified port).
 
+    Idempotent for the same app (a redeploy re-registers its own port);
+    raises ``ValueError`` if the port is held by a different app.
     Returns the updated ports dict.
-    Raises ``ValueError`` if the port is already in use.
     """
     port_str = str(port)
-    if port_str in ports["allocated"]:
-        existing = ports["allocated"][port_str]
+    existing = ports["allocated"].get(port_str)
+    if existing is not None and existing != app_name:
         raise ValueError(f"Port {port} already allocated to '{existing}'")
     ports["allocated"][port_str] = app_name
     # Advance next_port past this one if needed

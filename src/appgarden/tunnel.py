@@ -277,8 +277,22 @@ def open_tunnel(
     # 1. Allocate port and set up Caddy
     with ssh_connect(server) as host:
         remote_port = allocate_port(host, app_name)
-        _deploy_tunnel_caddy(host, tunnel_id, url, remote_port, ctx=ctx)
-        _register_tunnel(host, tunnel_id, url, local_port, remote_port, ctx=ctx)
+        try:
+            _deploy_tunnel_caddy(host, tunnel_id, url, remote_port, ctx=ctx)
+            _register_tunnel(host, tunnel_id, url, local_port, remote_port, ctx=ctx)
+        except BaseException:
+            # Unwind: tunnel ids are fresh, so the allocation is always newly
+            # created. Without this, a failed setup leaks the port — and since
+            # the tunnel never reached active.json, `tunnel cleanup` can't
+            # reap it (issue #24). The snippet may exist if registration was
+            # the failing step; _remove_tunnel_caddy is a no-op otherwise.
+            _remove_tunnel_caddy(host, tunnel_id, ctx=ctx)
+            try:
+                release_port(host, app_name)
+            except (ValueError, RuntimeError) as e:
+                console.print(f"[yellow]Warning:[/yellow] failed to release "
+                              f"port {remote_port} for {tunnel_id}: {e}")
+            raise
 
     console.print(f"[green]Tunnel open:[/green] https://{url} -> localhost:{local_port}")
     console.print(f"[dim]Remote port: {remote_port} | Tunnel ID: {tunnel_id}[/dim]")

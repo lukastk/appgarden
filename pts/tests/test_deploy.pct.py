@@ -23,6 +23,8 @@ from nblite import nbl_export; nbl_export();
 import json
 from unittest.mock import MagicMock, patch, call
 
+import pytest
+
 from appgarden.config import ServerConfig
 from appgarden.deploy import (
     is_git_url,
@@ -295,6 +297,115 @@ def _get_written_files(host):
         if bio:
             written[path] = bio.getvalue().decode("utf-8")
     return written
+
+# %% [markdown]
+# ## Port claiming and failure unwind (issue #24)
+
+# %%
+#|export
+def _stateful_host(garden_state=None, ports_state=None):
+    """Mock host whose CAS updates actually apply to an in-memory state, so
+    tests can assert final registry/garden contents after multi-step flows."""
+    import hashlib
+    import re as _re
+
+    state = {
+        "garden": garden_state or {"apps": {}},
+        "ports": ports_state or {"next_port": 10000, "allocated": {}},
+    }
+    staged: dict[str, str] = {}
+    host = MagicMock()
+
+    def _key(cmd):
+        return "ports" if "ports.json" in cmd else "garden"
+
+    def _run(command="", **kw):
+        out = MagicMock(); out.stderr = ""
+        if "CAS_OK" in command:
+            m = _re.search(r"mv (\S+\.tmp\.[0-9a-f]{8})", command)
+            if m and m.group(1) in staged:
+                state[_key(command)] = json.loads(staged[m.group(1)])
+            out.stdout = "CAS_OK"
+            return (True, out)
+        if "sha256sum" in command:
+            payload = json.dumps(state[_key(command)])
+            out.stdout = hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+            return (True, out)
+        out.stdout = ""
+        return (True, out)
+
+    host.run_shell_command.side_effect = _run
+
+    def _put(filename_or_io, remote_filename, **kw):
+        staged[remote_filename] = filename_or_io.getvalue().decode("utf-8")
+        return True
+    host.put_file.side_effect = _put
+
+    def _get(remote_filename, filename_or_io, **kw):
+        if remote_filename.endswith(".caddy"):
+            raise FileNotFoundError(remote_filename)
+        data = state["ports"] if "ports.json" in remote_filename else state["garden"]
+        filename_or_io.write(json.dumps(data).encode("utf-8"))
+        return True
+    host.get_file.side_effect = _get
+
+    host._state = state
+    return host
+
+# %%
+#|export
+def test_deploy_command_explicit_port_registered():
+    """An explicit --port lands in the shared registry (idempotently), so later
+    auto-allocations can't hand it out to another app."""
+    host = _stateful_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        deploy_command(_make_server(), "myapp", "python app.py",
+                       "myapp.apps.example.com", port=10500, source="/tmp/src")
+
+    assert host._state["ports"]["allocated"]["10500"] == "myapp"
+    assert host._state["ports"]["next_port"] == 10501
+    assert host._state["garden"]["apps"]["myapp"]["port"] == 10500
+
+# %%
+#|export
+def test_deploy_command_failure_releases_new_port():
+    """A newly-claimed port is released when a later deploy step fails —
+    otherwise the allocation leaks and nothing can ever reap it."""
+    host = _stateful_host()
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"), \
+         patch("appgarden.deploy.deploy_caddy_config", side_effect=RuntimeError("caddy exploded")):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="caddy exploded"):
+            deploy_command(_make_server(), "myapp", "python app.py",
+                           "myapp.apps.example.com", source="/tmp/src")
+
+    assert host._state["ports"]["allocated"] == {}
+    assert "myapp" not in host._state["garden"]["apps"]
+
+# %%
+#|export
+def test_deploy_command_failure_keeps_preexisting_port():
+    """A failed redeploy must NOT release the port the running app already
+    holds — only newly-created claims are unwound."""
+    host = _stateful_host(ports_state={"next_port": 10001, "allocated": {"10000": "myapp"}})
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"), \
+         patch("appgarden.deploy.deploy_caddy_config", side_effect=RuntimeError("caddy exploded")):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="caddy exploded"):
+            deploy_command(_make_server(), "myapp", "python app.py",
+                           "myapp.apps.example.com", source="/tmp/src")
+
+    assert host._state["ports"]["allocated"] == {"10000": "myapp"}
 
 # %% [markdown]
 # ## deploy_command

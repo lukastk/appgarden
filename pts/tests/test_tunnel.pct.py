@@ -32,7 +32,7 @@ from appgarden.tunnel import (
     _read_tunnels_state, _update_tunnels_state,
     _tunnel_caddy_path, _deploy_tunnel_caddy,
     _remove_tunnel_caddy, _register_tunnel, _unregister_tunnel,
-    list_tunnels, close_tunnel,
+    list_tunnels, close_tunnel, open_tunnel,
     TUNNELS_STATE_FILE, TunnelInfo,
 )
 
@@ -295,6 +295,55 @@ def test_list_tunnels_with_entries():
     assert len(tunnels) == 2
     ids = {t.tunnel_id for t in tunnels}
     assert ids == {"tunnel-1", "tunnel-2"}
+
+# %% [markdown]
+# ## open_tunnel failure unwind
+
+# %%
+#|export
+def test_open_tunnel_setup_failure_releases_port():
+    """A failed tunnel setup releases the just-allocated port (and removes the
+    snippet). Without the unwind the port leaks — and since the tunnel never
+    reached active.json, `tunnel cleanup` could never reap it (issue #24)."""
+    import hashlib
+    import re as _re
+
+    state = {"ports": {"next_port": 10000, "allocated": {}}, "tunnels": {"tunnels": {}}}
+    staged: dict[str, str] = {}
+    host = MagicMock()
+
+    def _run(command="", **kw):
+        out = MagicMock(); out.stderr = ""; out.stdout = ""
+        if "CAS_OK" in command:
+            key = "ports" if "ports.json" in command else "tunnels"
+            m = _re.search(r"mv (\S+\.tmp\.[0-9a-f]{8})", command)
+            if m and m.group(1) in staged:
+                state[key] = json.loads(staged[m.group(1)])
+            out.stdout = "CAS_OK"
+        elif "sha256sum" in command:
+            payload = json.dumps(state["ports"] if "ports.json" in command else state["tunnels"])
+            out.stdout = hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+        return (True, out)
+
+    host.run_shell_command.side_effect = _run
+
+    def _put(filename_or_io, remote_filename, **kw):
+        staged[remote_filename] = filename_or_io.getvalue().decode("utf-8")
+        return True
+    host.put_file.side_effect = _put
+    host.get_file.side_effect = FileNotFoundError("no previous file")
+
+    with patch("appgarden.tunnel.ssh_connect") as mock_connect, \
+         patch("appgarden.tunnel._deploy_tunnel_caddy", side_effect=RuntimeError("reload failed")):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="reload failed"):
+            open_tunnel(_make_server(), 3000, "t.example.com")
+
+    # The allocation was unwound; nothing leaked
+    assert state["ports"]["allocated"] == {}
+    # And no tunnel was registered
+    assert state["tunnels"]["tunnels"] == {}
 
 # %% [markdown]
 # ## close_tunnel

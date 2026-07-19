@@ -134,6 +134,16 @@ def test_register_port_conflict():
 
 # %%
 #|export
+def test_register_port_same_app_idempotent():
+    """Re-registering the same port for the same app is a no-op (a redeploy
+    with an explicit port must not conflict with itself)."""
+    ports = empty_ports_state()
+    ports = _register_port(ports, 8080, "app")
+    ports = _register_port(ports, 8080, "app")
+    assert ports["allocated"]["8080"] == "app"
+
+# %%
+#|export
 def test_register_port_advances_next():
     """Registering a port >= next_port advances next_port."""
     ports = empty_ports_state()

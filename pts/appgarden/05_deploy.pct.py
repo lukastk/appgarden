@@ -38,7 +38,7 @@ from appgarden.remote import (
     app_dir as _ctx_app_dir, source_dir as _ctx_source_dir,
     validate_branch, validate_env_key,
 )
-from appgarden.ports import allocate_port
+from appgarden.ports import allocate_port, register_port, release_port, get_app_port
 from appgarden.routing import parse_url, deploy_caddy_config, render_template
 
 console = Console()
@@ -161,6 +161,41 @@ def deploy_static(
         )
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
+
+# %% [markdown]
+# ## Port claiming with failure unwind
+#
+# A port claimed at the start of a deploy must be released again if a later
+# step fails — otherwise the allocation leaks and (since the app was never
+# registered) nothing can ever reap it. But only *newly created* claims may
+# be released: a redeploy re-claims the port its running app already holds.
+
+# %%
+#|export
+def _claim_port(host, name: str, port: int | None) -> tuple[int, bool]:
+    """Claim a host port for *name*: auto-allocate, or register an explicit one.
+
+    Explicit ports are registered in the shared registry too (idempotently),
+    so later auto-allocations can't collide with them. Returns
+    ``(port, newly_claimed)`` — ``newly_claimed`` is False when the app
+    already held this exact allocation (e.g. a redeploy).
+    """
+    existing = get_app_port(host, name)
+    if port is None:
+        port = allocate_port(host, name)
+    else:
+        register_port(host, port, name)
+    return port, existing != port
+
+# %%
+#|export
+def _release_claimed_port(host, name: str, port: int) -> None:
+    """Best-effort release of a just-claimed port during failure unwind."""
+    try:
+        release_port(host, name)
+    except (ValueError, RuntimeError) as e:
+        console.print(f"[yellow]Warning:[/yellow] failed to release port {port} "
+                      f"claimed for '{name}': {e}")
 
 # %% [markdown]
 # ## Environment file helpers
@@ -343,52 +378,57 @@ def deploy_command(
             source_type = upload_source(server, host, name, source, branch, ctx=ctx,
                                         exclude=exclude, gitignore=gitignore)
 
-        # Allocate port
-        if port is None:
-            port = allocate_port(host, name)
+        # Claim port (auto-allocated or explicit; explicit ports are
+        # registered in the shared registry too)
+        port, port_newly_claimed = _claim_port(host, name, port)
         console.print(f"  [dim]Port: {port}[/dim]")
 
-        # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
+        try:
+            # Write .env file
+            env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
-        # Create systemd unit
-        console.print("  [dim]Creating systemd service...[/dim]")
-        service_env = {"PORT": str(port)}
-        if env_vars:
-            service_env.update(env_vars)
-        if env_overrides:
-            service_env.update(env_overrides)
+            # Create systemd unit
+            console.print("  [dim]Creating systemd service...[/dim]")
+            service_env = {"PORT": str(port)}
+            if env_vars:
+                service_env.update(env_vars)
+            if env_overrides:
+                service_env.update(env_overrides)
 
-        unit_content = render_template(
-            "systemd.service.j2",
-            name=name,
-            method="command",
-            working_dir=_source_dir(name, ctx) if source else _app_dir(name, ctx),
-            env_file=env_path,
-            env_vars=service_env,
-            exec_start=cmd,
-            exec_stop=None,
-            # Run the app as the deploy user, not root (a root-entry deploy
-            # keeps root: it matches the file ownership it creates)
-            user=server.ssh_user if ctx.needs_sudo else None,
-        )
-        unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
+            unit_content = render_template(
+                "systemd.service.j2",
+                name=name,
+                method="command",
+                working_dir=_source_dir(name, ctx) if source else _app_dir(name, ctx),
+                env_file=env_path,
+                env_vars=service_env,
+                exec_start=cmd,
+                exec_stop=None,
+                # Run the app as the deploy user, not root (a root-entry deploy
+                # keeps root: it matches the file ownership it creates)
+                user=server.ssh_user if ctx.needs_sudo else None,
+            )
+            unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
-        # Deploy Caddy config
-        console.print("  [dim]Configuring Caddy...[/dim]")
-        garden_state = read_garden_state(host, ctx=ctx)
-        deploy_caddy_config(
-            host, app_name=name, domain=domain, port=port, path=path,
-            garden_state=garden_state, ctx=ctx,
-        )
+            # Deploy Caddy config
+            console.print("  [dim]Configuring Caddy...[/dim]")
+            garden_state = read_garden_state(host, ctx=ctx)
+            deploy_caddy_config(
+                host, app_name=name, domain=domain, port=port, path=path,
+                garden_state=garden_state, ctx=ctx,
+            )
 
-        # Register
-        _register_app(
-            host, name, "command", url,
-            source=source, source_type=source_type,
-            port=port, branch=branch, systemd_unit=unit_name,
-            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
-        )
+            # Register
+            _register_app(
+                host, name, "command", url,
+                source=source, source_type=source_type,
+                port=port, branch=branch, systemd_unit=unit_name,
+                extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
+            )
+        except BaseException:
+            if port_newly_claimed:
+                _release_claimed_port(host, name, port)
+            raise
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
 
@@ -441,45 +481,49 @@ def deploy_docker_compose(
             source_type = "local"
             working_dir = adir
 
-        # Allocate/register port
-        if port is None:
-            port = allocate_port(host, name)
+        # Claim port (auto-allocated or explicit)
+        port, port_newly_claimed = _claim_port(host, name, port)
         console.print(f"  [dim]Port: {port}[/dim]")
 
-        # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
+        try:
+            # Write .env file
+            env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
-        # Create systemd unit
-        console.print("  [dim]Creating systemd service...[/dim]")
-        unit_content = render_template(
-            "systemd.service.j2",
-            name=name,
-            method="docker-compose",
-            working_dir=working_dir,
-            env_file=None,
-            env_vars={},
-            exec_start="/usr/bin/docker compose up",
-            exec_stop="/usr/bin/docker compose down",
-            # Deploy user is in the docker group (added at server init)
-            user=server.ssh_user if ctx.needs_sudo else None,
-        )
-        unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
+            # Create systemd unit
+            console.print("  [dim]Creating systemd service...[/dim]")
+            unit_content = render_template(
+                "systemd.service.j2",
+                name=name,
+                method="docker-compose",
+                working_dir=working_dir,
+                env_file=None,
+                env_vars={},
+                exec_start="/usr/bin/docker compose up",
+                exec_stop="/usr/bin/docker compose down",
+                # Deploy user is in the docker group (added at server init)
+                user=server.ssh_user if ctx.needs_sudo else None,
+            )
+            unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
-        # Deploy Caddy config
-        console.print("  [dim]Configuring Caddy...[/dim]")
-        garden_state = read_garden_state(host, ctx=ctx)
-        deploy_caddy_config(
-            host, app_name=name, domain=domain, port=port, path=path,
-            garden_state=garden_state, ctx=ctx,
-        )
+            # Deploy Caddy config
+            console.print("  [dim]Configuring Caddy...[/dim]")
+            garden_state = read_garden_state(host, ctx=ctx)
+            deploy_caddy_config(
+                host, app_name=name, domain=domain, port=port, path=path,
+                garden_state=garden_state, ctx=ctx,
+            )
 
-        # Register
-        _register_app(
-            host, name, "docker-compose", url,
-            source=source, source_type=source_type,
-            port=port, branch=branch, systemd_unit=unit_name,
-            extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
-        )
+            # Register
+            _register_app(
+                host, name, "docker-compose", url,
+                source=source, source_type=source_type,
+                port=port, branch=branch, systemd_unit=unit_name,
+                extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
+            )
+        except BaseException:
+            if port_newly_claimed:
+                _release_claimed_port(host, name, port)
+            raise
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
 
@@ -520,70 +564,74 @@ def deploy_dockerfile(
         source_path = _source_dir(name, ctx)
         adir = _app_dir(name, ctx)
 
-        # Allocate port
-        if port is None:
-            port = allocate_port(host, name)
+        # Claim port (auto-allocated or explicit)
+        port, port_newly_claimed = _claim_port(host, name, port)
         console.print(f"  [dim]Port: {port}[/dim]")
 
-        # Build Docker image
-        image_name = f"appgarden-{name}"
-        console.print("  [dim]Building Docker image...[/dim]")
-        run_remote_command(
-            host,
-            f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}",
-            timeout=600,
-        )
+        try:
+            # Build Docker image
+            image_name = f"appgarden-{name}"
+            console.print("  [dim]Building Docker image...[/dim]")
+            run_remote_command(
+                host,
+                f"docker build -t {shlex.quote(image_name)} {shlex.quote(source_path)}",
+                timeout=600,
+            )
 
-        # Write .env file
-        env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
+            # Write .env file
+            env_path = _write_env_file(host, name, env_vars, env_file, env_overrides=env_overrides, ctx=ctx)
 
-        # Generate docker-compose.yml
-        compose_content = render_template(
-            "docker-compose.yml.j2",
-            port=port,
-            container_port=container_port,
-            env_file=".env" if env_path else None,
-            volumes=volumes or None,
-        )
-        # Replace "build: ." with "image: <image>" since we pre-built
-        compose_content = compose_content.replace(
-            "    build: .",
-            f"    image: {image_name}",
-        )
-        write_remote_file(host, f"{adir}/docker-compose.yml", compose_content)
+            # Generate docker-compose.yml
+            compose_content = render_template(
+                "docker-compose.yml.j2",
+                port=port,
+                container_port=container_port,
+                env_file=".env" if env_path else None,
+                volumes=volumes or None,
+            )
+            # Replace "build: ." with "image: <image>" since we pre-built
+            compose_content = compose_content.replace(
+                "    build: .",
+                f"    image: {image_name}",
+            )
+            write_remote_file(host, f"{adir}/docker-compose.yml", compose_content)
 
-        # Create systemd unit
-        console.print("  [dim]Creating systemd service...[/dim]")
-        unit_content = render_template(
-            "systemd.service.j2",
-            name=name,
-            method="dockerfile",
-            working_dir=adir,
-            env_file=None,
-            env_vars={},
-            exec_start="/usr/bin/docker compose up",
-            exec_stop="/usr/bin/docker compose down",
-            # Deploy user is in the docker group (added at server init)
-            user=server.ssh_user if ctx.needs_sudo else None,
-        )
-        unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
+            # Create systemd unit
+            console.print("  [dim]Creating systemd service...[/dim]")
+            unit_content = render_template(
+                "systemd.service.j2",
+                name=name,
+                method="dockerfile",
+                working_dir=adir,
+                env_file=None,
+                env_vars={},
+                exec_start="/usr/bin/docker compose up",
+                exec_stop="/usr/bin/docker compose down",
+                # Deploy user is in the docker group (added at server init)
+                user=server.ssh_user if ctx.needs_sudo else None,
+            )
+            unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
-        # Deploy Caddy config
-        console.print("  [dim]Configuring Caddy...[/dim]")
-        garden_state = read_garden_state(host, ctx=ctx)
-        deploy_caddy_config(
-            host, app_name=name, domain=domain, port=port, path=path,
-            garden_state=garden_state, ctx=ctx,
-        )
+            # Deploy Caddy config
+            console.print("  [dim]Configuring Caddy...[/dim]")
+            garden_state = read_garden_state(host, ctx=ctx)
+            deploy_caddy_config(
+                host, app_name=name, domain=domain, port=port, path=path,
+                garden_state=garden_state, ctx=ctx,
+            )
 
-        # Register
-        _register_app(
-            host, name, "dockerfile", url,
-            source=source, source_type=source_type,
-            port=port, container_port=container_port,
-            branch=branch, systemd_unit=unit_name,
-            extra=extra, exclude=exclude, gitignore=gitignore,
-            volumes=volumes, ctx=ctx,
-        )
+            # Register
+            _register_app(
+                host, name, "dockerfile", url,
+                source=source, source_type=source_type,
+                port=port, container_port=container_port,
+                branch=branch, systemd_unit=unit_name,
+                extra=extra, exclude=exclude, gitignore=gitignore,
+                volumes=volumes, ctx=ctx,
+            )
+        except BaseException:
+            if port_newly_claimed:
+                _release_claimed_port(host, name, port)
+            raise
 
     console.print(f"[bold green]Deployed '{name}' at {url}[/bold green]")
