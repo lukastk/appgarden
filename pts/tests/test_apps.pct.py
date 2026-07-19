@@ -184,6 +184,46 @@ def test_app_status_service():
 
 # %%
 #|export
+def test_app_status_failed_unit_reported_as_failed():
+    """A crashed unit reports 'failed', not 'inactive' — `systemctl is-active`
+    exits non-zero for both, and the old raise-on-nonzero path collapsed them
+    (issue #25)."""
+    host = _mock_host()
+    original_side_effect = host.run_shell_command.side_effect
+    def _mock_run(command="", **kw):
+        if "systemctl is-active" in command:
+            output = MagicMock()
+            output.stdout = "failed"
+            output.stderr = ""
+            return (False, output)  # non-zero exit, real state on stdout
+        return original_side_effect(command=command, **kw)
+    host.run_shell_command.side_effect = _mock_run
+
+    status = app_status(host, "myapp")
+    assert status.status == "failed"
+
+# %%
+#|export
+def test_app_status_probe_failure_raises():
+    """A probe that produces no state at all (broken sudo/helper) raises
+    loudly instead of guessing 'inactive'."""
+    import pytest
+    host = _mock_host()
+    original_side_effect = host.run_shell_command.side_effect
+    def _mock_run(command="", **kw):
+        if "systemctl is-active" in command:
+            output = MagicMock()
+            output.stdout = ""
+            output.stderr = "sudo: command not found"
+            return (False, output)
+        return original_side_effect(command=command, **kw)
+    host.run_shell_command.side_effect = _mock_run
+
+    with pytest.raises(RuntimeError, match="Failed to probe unit state"):
+        app_status(host, "myapp")
+
+# %%
+#|export
 def test_app_status_not_found():
     """app_status raises ValueError for unknown app."""
     import pytest

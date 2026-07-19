@@ -260,6 +260,36 @@ def privileged_systemctl(host, action: str, unit: str | None = None,
 
 # %%
 #|export
+def systemctl_is_active(host, unit: str, ctx: RemoteContext | None = None) -> str:
+    """Return a unit's activation state ('active', 'inactive', 'failed', ...).
+
+    ``systemctl is-active`` exits non-zero for every state but 'active' while
+    still printing the real state — a raise-on-nonzero wrapper would collapse
+    'failed' (crashed) into 'inactive' (stopped). So capture stdout regardless
+    of the exit code. A probe that produces no output at all (e.g. sudo or the
+    privileged helper broken) raises instead of guessing a state.
+    """
+    if not ctx or not ctx.needs_sudo:
+        cmd = f"systemctl is-active {shlex.quote(unit)}"
+        sudo_kw = _sudo_kwargs(ctx)
+    else:
+        _require_privileged_helper(host, ctx)
+        cmd = f"sudo {PRIVILEGED_HELPER_PATH} systemctl is-active {shlex.quote(unit)}"
+        sudo_kw = {}
+    ok, output = host.run_shell_command(
+        command=cmd, print_output=False, print_input=False,
+        _timeout=30, **sudo_kw,
+    )
+    state = (output.stdout or "").strip() if output else ""
+    if state:
+        return state.splitlines()[-1].strip()
+    if ok:
+        return "unknown"
+    stderr = output.stderr if output else ""
+    raise RuntimeError(f"Failed to probe unit state: {cmd}\n{stderr}")
+
+# %%
+#|export
 def privileged_install_unit(host, name: str, content: str,
                             ctx: RemoteContext | None = None) -> None:
     """Install a systemd unit file, routing through the wrapper for non-root users.

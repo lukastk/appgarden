@@ -15,6 +15,7 @@ from .remote import (
     ssh_connect, run_remote_command, write_remote_file,
     read_garden_state, update_garden_state_locked, upload_directory,
     privileged_systemctl, privileged_remove_unit, privileged_journalctl,
+    systemctl_is_active,
 )
 from .routing import parse_url, remove_caddy_config
 from .ports import release_port
@@ -58,12 +59,9 @@ def list_apps_with_status(host, ctx: RemoteContext | None = None) -> list[AppInf
         if app.method == "static":
             app.status = "serving"
         else:
-            unit = _systemd_unit_name(app.name)
-            try:
-                result = privileged_systemctl(host, "is-active", unit, ctx=ctx)
-                app.status = result.strip()
-            except RuntimeError:
-                app.status = "inactive"
+            # systemctl_is_active preserves the real state: a crashed unit
+            # reports 'failed', not 'inactive' (issue #25)
+            app.status = systemctl_is_active(host, _systemd_unit_name(app.name), ctx=ctx)
     return apps
 
 # %% pts/appgarden/06_apps.pct.py 9
@@ -95,12 +93,8 @@ def app_status(host, name: str, ctx: RemoteContext | None = None) -> AppStatus:
     if method == "static":
         status = "serving"
     else:
-        unit = _systemd_unit_name(name)
-        try:
-            result = privileged_systemctl(host, "is-active", unit, ctx=ctx)
-            status = result.strip()
-        except RuntimeError:
-            status = "inactive"
+        # Preserves the real state: crashed units report 'failed' (issue #25)
+        status = systemctl_is_active(host, _systemd_unit_name(name), ctx=ctx)
 
     return AppStatus(
         name=name,
