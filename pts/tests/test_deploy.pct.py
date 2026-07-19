@@ -330,6 +330,36 @@ def test_deploy_command_creates_systemd_unit():
     assert garden["apps"]["myapp"]["method"] == "command"
     assert garden["apps"]["myapp"]["port"] == 10000
 
+    # Root deploy: no User= directive (runs as root, matching its file ownership)
+    assert "User=" not in unit_content
+
+# %%
+#|export
+def test_deploy_command_nonroot_unit_runs_as_deploy_user():
+    """A non-root deploy renders User=<ssh_user> into the unit so the app
+    process doesn't run as root (issue #22)."""
+    host = _mock_host()
+    server = ServerConfig(
+        ssh_user="deploy", ssh_key="~/.ssh/id_rsa",
+        domain="apps.example.com", host="1.2.3.4",
+    )
+
+    with patch("appgarden.deploy.ssh_connect") as mock_connect, \
+         patch("appgarden.deploy.upload_directory"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+
+        deploy_command(server, "myapp", "python app.py",
+                       "myapp.apps.example.com", source="/tmp/src")
+
+    written = _get_written_files(host)
+    # Non-root units are staged via the privileged wrapper's tmp path
+    unit_files = [p for p in written
+                  if p.endswith(".service") or p.startswith("/tmp/appgarden-unit-")]
+    assert unit_files, f"no unit content captured; wrote: {list(written)}"
+    unit_content = written[unit_files[0]]
+    assert "User=deploy\n" in unit_content
+
 # %%
 #|export
 def test_deploy_command_with_env():

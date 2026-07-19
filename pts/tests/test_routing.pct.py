@@ -336,6 +336,41 @@ def test_render_systemd_template():
     assert "PORT=10000" in content
     assert "/usr/bin/python3 app.py" in content
     assert "EnvironmentFile=" in content
+    # No user passed -> unit runs with systemd's default (root); no User= line
+    assert "User=" not in content
+
+# %%
+#|export
+def test_render_systemd_template_with_user():
+    """Passing user= adds a User= directive so the app doesn't run as root."""
+    content = render_template(
+        "systemd.service.j2",
+        name="myapp", method="command", working_dir="/srv/x",
+        env_file=None, env_vars={}, exec_start="/usr/bin/x", exec_stop=None,
+        user="appgarden-deploy",
+    )
+    assert "User=appgarden-deploy\n" in content
+
+# %%
+#|export
+def test_render_systemd_template_escapes_env_values():
+    """Environment= values are escaped for systemd: quotes and backslashes per
+    systemd quoting, and % doubled (specifier expansion) — otherwise a value
+    containing any of these corrupts the unit file."""
+    content = render_template(
+        "systemd.service.j2",
+        name="myapp", method="command", working_dir="/srv/x",
+        env_file=None,
+        env_vars={
+            "MSG": 'say "hi"',
+            "PCT": "100%",
+            "PATHY": "a\\b",
+        },
+        exec_start="/usr/bin/x", exec_stop=None,
+    )
+    assert 'Environment="MSG=say \\"hi\\""' in content
+    assert 'Environment="PCT=100%%"' in content
+    assert 'Environment="PATHY=a\\\\b"' in content
 
 # %%
 #|export

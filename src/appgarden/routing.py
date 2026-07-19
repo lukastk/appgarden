@@ -30,6 +30,17 @@ _jinja_env = Environment(
     lstrip_blocks=True,
 )
 
+def _systemd_env_escape(value) -> str:
+    """Escape a value for a quoted systemd ``Environment="KEY=VALUE"`` assignment.
+
+    Backslashes and double quotes per systemd quoting rules; ``%`` doubled
+    because systemd expands specifiers (%i, %h, ...) in Environment directives —
+    an unescaped value containing any of these corrupts the unit file.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+
+_jinja_env.filters["systemd_env_escape"] = _systemd_env_escape
+
 # %% pts/appgarden/03_routing.pct.py 6
 def parse_url(url: str) -> tuple[str, str | None]:
     """Parse a URL into (domain, path_or_none).

@@ -368,6 +368,9 @@ def deploy_command(
             env_vars=service_env,
             exec_start=cmd,
             exec_stop=None,
+            # Run the app as the deploy user, not root (a root-entry deploy
+            # keeps root: it matches the file ownership it creates)
+            user=server.ssh_user if ctx.needs_sudo else None,
         )
         unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
@@ -457,6 +460,8 @@ def deploy_docker_compose(
             env_vars={},
             exec_start="/usr/bin/docker compose up",
             exec_stop="/usr/bin/docker compose down",
+            # Deploy user is in the docker group (added at server init)
+            user=server.ssh_user if ctx.needs_sudo else None,
         )
         unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 
@@ -558,6 +563,8 @@ def deploy_dockerfile(
             env_vars={},
             exec_start="/usr/bin/docker compose up",
             exec_stop="/usr/bin/docker compose down",
+            # Deploy user is in the docker group (added at server init)
+            user=server.ssh_user if ctx.needs_sudo else None,
         )
         unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 

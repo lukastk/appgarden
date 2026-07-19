@@ -250,6 +250,8 @@ def deploy_auto(
             env_vars={},
             exec_start="/usr/bin/docker compose up",
             exec_stop="/usr/bin/docker compose down",
+            # Deploy user is in the docker group (added at server init)
+            user=server.ssh_user if ctx.needs_sudo else None,
         )
         unit_name = _deploy_systemd_unit(host, name, unit_content, ctx=ctx)
 

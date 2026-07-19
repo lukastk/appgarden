@@ -11,12 +11,15 @@ After=network.target
 Type=simple
 Restart=always
 RestartSec=5
+{% if user %}
+User={{ user }}
+{% endif %}
 WorkingDirectory={{ working_dir }}
 {% if env_file %}
 EnvironmentFile={{ env_file }}
 {% endif %}
 {% for key, value in env_vars.items() %}
-Environment="{{ key }}={{ value }}"
+Environment="{{ key }}={{ value|systemd_env_escape }}"
 {% endfor %}
 ExecStart={{ exec_start }}
 {% if exec_stop %}
