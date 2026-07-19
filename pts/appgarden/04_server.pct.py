@@ -272,13 +272,27 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
         ]
         _run(host, f"mkdir -p {' '.join(dirs)}", "Creating directory structure", ctx=ctx)
 
-        # 10. Create appgarden group (optional, opt-in)
+        # 10. Host state dir ownership (essential)
+        # HOST_STATE_DIR is shared by every garden and every deploy user on
+        # this box, so its ownership can't follow whichever server entry
+        # happened to run init (a root-entry init used to leave it root:root,
+        # locking out the box's non-root deploy users — the adu-apps bug,
+        # 2026-07-16). It is always root:appgarden with group-write and
+        # setgid; the opt-in "group" step below only governs sharing of the
+        # per-garden app_root.
+        _run(host,
+             f"groupadd -f appgarden && "
+             f"chown -R root:appgarden {HOST_STATE_DIR} && "
+             f"chmod -R g+rwX {HOST_STATE_DIR} && "
+             f"chmod g+s {HOST_STATE_DIR}",
+             "Setting host state dir ownership", ctx=ctx)
+
+        # 10a. Share app_root with the appgarden group (optional, opt-in)
         if "group" not in skip:
             _run(host,
-                 f"groupadd -f appgarden && "
-                 f"chgrp -R appgarden {app_root} {HOST_STATE_DIR} && "
-                 f"chmod -R g+rwX {app_root} {HOST_STATE_DIR} && "
-                 f"find {app_root} {HOST_STATE_DIR} -type d -exec chmod g+s {{}} +",
+                 f"chgrp -R appgarden {app_root} && "
+                 f"chmod -R g+rwX {app_root} && "
+                 f"find {app_root} -type d -exec chmod g+s {{}} +",
                  "Creating appgarden group", ctx=ctx)
 
         # 10b. Install privileged wrapper and sudoers entry (essential)
@@ -294,14 +308,17 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
 
         # 11. Set app root ownership for deploy users (essential)
         if "group" not in skip:
-            _run(host, f"chown -R root:appgarden {app_root} {HOST_STATE_DIR}",
+            _run(host, f"chown -R root:appgarden {app_root}",
                  "Setting app root ownership", ctx=ctx)
-            if ctx.needs_sudo:
-                _run(host, f"usermod -aG appgarden {server.ssh_user}",
-                     "Adding user to appgarden group", ctx=ctx)
         elif ctx.needs_sudo:
-            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root} {HOST_STATE_DIR}",
+            _run(host, f"chown -R {server.ssh_user}:{server.ssh_user} {app_root}",
                  "Setting app root ownership", ctx=ctx)
+        # A non-root deploy user always joins the appgarden group: writing the
+        # shared host ports registry requires it, independently of whether this
+        # garden's app_root is group-shared.
+        if ctx.needs_sudo:
+            _run(host, f"usermod -aG appgarden {server.ssh_user}",
+                 "Adding user to appgarden group", ctx=ctx)
         if ctx.needs_sudo and "docker" not in skip:
             _run(host, f"usermod -aG docker {server.ssh_user}",
                  "Adding user to docker group", ctx=ctx)

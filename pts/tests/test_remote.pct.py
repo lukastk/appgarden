@@ -28,7 +28,8 @@ from appgarden.remote import (
     read_remote_file, write_remote_file, run_remote_command,
     read_garden_state, write_garden_state,
     read_ports_state, write_ports_state,
-    GARDEN_STATE_PATH, PORTS_PATH, PRIVILEGED_HELPER_PATH,
+    read_ports_state_locked, write_ports_state_locked,
+    GARDEN_STATE_PATH, PORTS_PATH, HOST_STATE_DIR, PRIVILEGED_HELPER_PATH,
     DEFAULT_APP_ROOT, RemoteContext, make_remote_context,
     run_sudo_command, write_system_file,
     garden_state_path, ports_path, caddy_apps_dir, caddy_tunnels_dir,
@@ -179,6 +180,68 @@ def test_ports_state_roundtrip():
 
     loaded = read_ports_state(host)
     assert loaded == ports_data
+
+# %% [markdown]
+# ## Locked ports state: permission-denied hint (issue #18)
+#
+# When the shared host ports registry is unwritable (its ownership was stamped
+# by an older `server init` run as a different user), the raw failure is an
+# opaque `Permission denied` deep in pyinfra/flock. Both locked accessors
+# translate it into an error that points at re-running `server init`.
+
+# %%
+#|export
+def test_write_ports_state_locked_permission_hint():
+    """An SFTP PermissionError writing the registry tmp file becomes a hint to
+    re-run server init."""
+    import pytest
+    host = MagicMock()
+    host.put_file.side_effect = PermissionError(13, "Permission denied")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        write_ports_state_locked(host, {"next_port": 10000, "allocated": {}})
+    assert HOST_STATE_DIR in str(excinfo.value)
+    assert "server init" in str(excinfo.value)
+
+# %%
+#|export
+def test_write_ports_state_locked_flock_permission_hint():
+    """A 'Permission denied' from the remote flock/mv also gets the hint."""
+    import pytest
+    host = MagicMock()
+    host.put_file.return_value = True
+    output_mock = MagicMock()
+    output_mock.stderr = "mv: cannot move 'ports.json.tmp': Permission denied"
+    host.run_shell_command.return_value = (False, output_mock)
+
+    with pytest.raises(RuntimeError, match="server init"):
+        write_ports_state_locked(host, {"next_port": 10000, "allocated": {}})
+
+# %%
+#|export
+def test_read_ports_state_locked_permission_hint():
+    """A 'Permission denied' creating the lock file on read gets the hint."""
+    import pytest
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stderr = "flock: cannot open lock file /var/lib/appgarden/.ports.lock: Permission denied"
+    host.run_shell_command.return_value = (False, output_mock)
+
+    with pytest.raises(RuntimeError, match="server init"):
+        read_ports_state_locked(host)
+
+# %%
+#|export
+def test_ports_state_locked_other_errors_unchanged():
+    """Non-permission failures keep the original error, not the hint."""
+    import pytest
+    host = MagicMock()
+    output_mock = MagicMock()
+    output_mock.stderr = "flock: timeout while waiting to get lock"
+    host.run_shell_command.return_value = (False, output_mock)
+
+    with pytest.raises(RuntimeError, match="Remote command failed"):
+        read_ports_state_locked(host)
 
 # %% [markdown]
 # ## RemoteContext

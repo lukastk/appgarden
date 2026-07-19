@@ -24,7 +24,7 @@ import json
 from unittest.mock import patch, MagicMock, call
 
 from appgarden.config import ServerConfig
-from appgarden.remote import RemoteContext, PORTS_PATH
+from appgarden.remote import RemoteContext, PORTS_PATH, HOST_STATE_DIR
 from appgarden.ports import empty_ports_state
 from appgarden.server import (
     ping_server, init_server, INIT_STEPS,
@@ -527,3 +527,105 @@ def test_init_server_minimal():
 
     # SSH hardening should NOT be written (optional)
     assert "/etc/ssh/sshd_config.d/hardening.conf" not in written_files
+
+# %% [markdown]
+# ## Host state dir ownership (issue #18)
+#
+# `HOST_STATE_DIR` (the box-global shared ports registry) is shared by every
+# garden and every deploy user on the box, so init must always leave it
+# `root:appgarden`, group-writable and setgid — regardless of which server
+# entry runs init and independently of the opt-in "group" step (which only
+# governs per-garden `app_root` sharing). Previously a root-entry init with
+# the group step off left it root:root, locking out non-root deploy users.
+
+# %%
+#|export
+def _host_state_ownership_cmds(cmds):
+    """Commands that set the essential HOST_STATE_DIR ownership."""
+    return [c for c in cmds
+            if "groupadd -f appgarden" in c
+            and f"chown -R root:appgarden {HOST_STATE_DIR}" in c
+            and "g+rwX" in c and "g+s" in c]
+
+# %%
+#|export
+def test_init_server_host_state_ownership_root_group_skipped():
+    """A root init with the group step skipped (the adu-apps case) still sets
+    HOST_STATE_DIR to root:appgarden group-writable setgid."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server(), skip={"group"})
+
+    cmds = _get_cmds(host_mock)
+    assert len(_host_state_ownership_cmds(cmds)) == 1, \
+        f"HOST_STATE_DIR ownership must be set even with group step skipped; cmds: {cmds}"
+    # The skipped group step must not run its per-garden app_root sharing.
+    assert not any("chgrp -R appgarden" in c for c in cmds)
+
+# %%
+#|export
+def test_init_server_host_state_ownership_minimal():
+    """The HOST_STATE_DIR ownership step is essential: it runs even with all
+    optional steps skipped."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server(), skip=set(INIT_STEPS))
+
+    cmds = _get_cmds(host_mock)
+    assert len(_host_state_ownership_cmds(cmds)) == 1
+
+# %%
+#|export
+def test_init_server_host_state_dir_never_user_owned():
+    """A non-root init with the group step skipped chowns app_root to the
+    ssh_user but leaves HOST_STATE_DIR root:appgarden (shared, box-global)."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_nonroot_server(), skip={"group"})
+
+    cmds = _get_cmds(host_mock)
+    assert len(_host_state_ownership_cmds(cmds)) == 1
+    # app_root is chowned to the deploy user...
+    assert any("chown -R deploy:deploy" in c and "/srv/appgarden" in c for c in cmds)
+    # ...but never HOST_STATE_DIR.
+    assert not any("deploy:deploy" in c and HOST_STATE_DIR in c for c in cmds)
+
+# %%
+#|export
+def test_init_server_nonroot_joins_appgarden_group_without_group_step():
+    """A non-root ssh_user is added to the appgarden group even when the
+    per-garden group step is skipped — it needs the group to write the shared
+    host ports registry."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_nonroot_server(), skip={"group"})
+
+    cmds = _get_cmds(host_mock)
+    assert any("usermod -aG appgarden deploy" in c for c in cmds), \
+        f"non-root user must join appgarden group even without the group step; cmds: {cmds}"
+
+# %%
+#|export
+def test_init_server_root_no_usermod():
+    """A root init never needs a usermod into the appgarden group."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    cmds = _get_cmds(host_mock)
+    assert not any("usermod -aG appgarden" in c for c in cmds)

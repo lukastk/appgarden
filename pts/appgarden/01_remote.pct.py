@@ -567,11 +567,31 @@ def write_garden_state_locked(host, state: dict, ctx: RemoteContext | None = Non
     write_remote_file(host, tmp, content)
     run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
 
+def _raise_ports_permission_hint(e: Exception) -> None:
+    """Re-raise a permission failure on the shared ports registry with a repair hint.
+
+    The registry dir must be root:appgarden group-writable; older inits stamped
+    it with whichever user ran them, locking out the box's other deploy users.
+    """
+    raise RuntimeError(
+        f"Permission denied on the shared host ports registry ({HOST_STATE_DIR}). "
+        f"Its ownership was likely set by an older 'server init' run as a different user. "
+        f"Re-run 'appgarden server init <server>' (any entry for this box) to repair it."
+    ) from e
+
+def _is_permission_denied(e: Exception) -> bool:
+    return isinstance(e, PermissionError) or "permission denied" in str(e).lower()
+
 def read_ports_state_locked(host) -> dict:
     """Read the host-level ports state under flock (shared across all gardens)."""
     lock = HOST_PORTS_LOCK
     path = ports_path()
-    raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
+    try:
+        raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
+    except RuntimeError as e:
+        if _is_permission_denied(e):
+            _raise_ports_permission_hint(e)
+        raise
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
@@ -583,5 +603,10 @@ def write_ports_state_locked(host, state: dict) -> None:
     lock = HOST_PORTS_LOCK
     content = json.dumps(state, indent=2)
     tmp = f"{path}.tmp"
-    write_remote_file(host, tmp, content)
-    run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
+    try:
+        write_remote_file(host, tmp, content)
+        run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
+    except (PermissionError, RuntimeError) as e:
+        if _is_permission_denied(e):
+            _raise_ports_permission_hint(e)
+        raise
