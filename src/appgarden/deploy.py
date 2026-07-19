@@ -15,7 +15,7 @@ from .remote import (
     APPGARDEN_ROOT,
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
-    read_garden_state, write_garden_state, upload_directory,
+    read_garden_state, update_garden_state_locked, upload_directory,
     privileged_install_unit, privileged_systemctl,
     app_dir as _ctx_app_dir, source_dir as _ctx_source_dir,
     validate_branch, validate_env_key,
@@ -118,7 +118,7 @@ def deploy_static(
 
         # 3. Register
         _register_app(
-            host, garden_state, name, "static", url,
+            host, name, "static", url,
             source=source, source_type=source_type, branch=branch,
             extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
         )
@@ -192,7 +192,6 @@ def _deploy_systemd_unit(host, name: str, unit_content: str, ctx: RemoteContext 
 # %% pts/appgarden/05_deploy.pct.py 18
 def _register_app(
     host,
-    garden_state: dict,
     name: str,
     method: str,
     url: str,
@@ -208,7 +207,11 @@ def _register_app(
     volumes: list[str] | None = None,
     ctx: RemoteContext | None = None,
 ) -> dict:
-    """Register an app in garden.json and write app.json. Returns the app entry."""
+    """Register an app in garden.json and write app.json. Returns the app entry.
+
+    The garden.json write is a locked compare-and-swap update against fresh
+    state, so a slow deploy can't clobber entries registered concurrently.
+    """
     domain, path = parse_url(url)
     now = datetime.now(timezone.utc).isoformat()
     app_entry = {
@@ -241,8 +244,11 @@ def _register_app(
     if extra:
         app_entry.update(extra)
 
-    garden_state["apps"][name] = app_entry
-    write_garden_state(host, garden_state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        state.setdefault("apps", {})[name] = app_entry
+        return state
+
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
     app_json_path = f"{_app_dir(name, ctx)}/app.json"
     write_remote_file(host, app_json_path, json.dumps(app_entry, indent=2))
@@ -317,7 +323,7 @@ def deploy_command(
 
         # Register
         _register_app(
-            host, garden_state, name, "command", url,
+            host, name, "command", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
             extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
@@ -400,7 +406,7 @@ def deploy_docker_compose(
 
         # Register
         _register_app(
-            host, garden_state, name, "docker-compose", url,
+            host, name, "docker-compose", url,
             source=source, source_type=source_type,
             port=port, branch=branch, systemd_unit=unit_name,
             extra=extra, exclude=exclude, gitignore=gitignore, ctx=ctx,
@@ -494,7 +500,7 @@ def deploy_dockerfile(
 
         # Register
         _register_app(
-            host, garden_state, name, "dockerfile", url,
+            host, name, "dockerfile", url,
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,

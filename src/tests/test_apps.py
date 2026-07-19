@@ -60,15 +60,24 @@ def _mock_host(garden_state=None, ports_state=None):
     host = MagicMock()
 
     def _mock_run(command="", **kw):
+        import hashlib
         output = MagicMock()
-        # Handle flock commands that read state files
-        if "flock" in command and "cat" in command:
+        # CAS writes (locked compare-and-swap update) always succeed
+        if "CAS_OK" in command:
+            output.stdout = "CAS_OK"
+        # Locked reads: sha + content of the requested state file
+        elif ("flock" in command and "cat" in command) or "sha256sum" in command:
             if "ports.json" in command:
-                output.stdout = json.dumps(ports_state)
+                payload = json.dumps(ports_state)
             elif "garden.json" in command:
-                output.stdout = json.dumps(garden_state)
+                payload = json.dumps(garden_state)
             else:
-                output.stdout = ""
+                payload = ""
+            if "sha256sum" in command:
+                sha = hashlib.sha256(payload.encode()).hexdigest()
+                output.stdout = f"{sha}\n{payload}"
+            else:
+                output.stdout = payload
         else:
             output.stdout = ""
         return (True, output)

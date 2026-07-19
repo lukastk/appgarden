@@ -20,9 +20,11 @@ from nblite import nbl_export; nbl_export();
 
 # %%
 #|export
+import copy
 import json
 import re
 import shlex
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO, StringIO
@@ -106,6 +108,11 @@ def source_dir(ctx: RemoteContext | None, name: str) -> str:
 def tunnels_state_path(ctx: RemoteContext | None = None) -> str:
     root = ctx.app_root if ctx else DEFAULT_APP_ROOT
     return f"{root}/tunnels/active.json"
+
+def tunnels_lock_path(ctx: RemoteContext | None = None) -> str:
+    """Lock file guarding updates to the tunnels active.json."""
+    root = ctx.app_root if ctx else DEFAULT_APP_ROOT
+    return f"{root}/tunnels/.tunnels.lock"
 
 # %% [markdown]
 # ## Input validation
@@ -438,15 +445,13 @@ def read_garden_state(host, ctx: RemoteContext | None = None) -> dict:
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Corrupted garden.json on server: {e}. You may need to re-run 'server init'.")
 
-# %%
-#|export
-def write_garden_state(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write the garden state to garden.json."""
-    content = json.dumps(state, indent=2)
-    write_remote_file(host, garden_state_path(ctx), content)
-
 # %% [markdown]
 # ## Ports state (ports.json)
+#
+# Read-only accessor. All *mutations* of garden.json and ports.json go through
+# the locked update functions below — an in-place overwrite would both need
+# write permission on the file itself (the issue #18 ownership lockout) and
+# silently lose concurrent updates.
 
 # %%
 #|export
@@ -457,13 +462,6 @@ def read_ports_state(host) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Corrupted ports.json on server: {e}. You may need to re-run 'server init'.")
-
-# %%
-#|export
-def write_ports_state(host, state: dict) -> None:
-    """Write port allocations to the host-level ports.json."""
-    content = json.dumps(state, indent=2)
-    write_remote_file(host, ports_path(), content)
 
 # %% [markdown]
 # ## Directory upload
@@ -536,10 +534,22 @@ def upload_directory(
         raise RuntimeError(f"rsync failed (exit {e.returncode}): {stderr}")
 
 # %% [markdown]
-# ## File locking
+# ## Locked state updates (compare-and-swap)
 #
-# Use ``flock`` on the remote server to prevent concurrent state
-# file corruption when multiple clients run simultaneously.
+# Shared JSON state files (garden.json, the host ports registry, the tunnels
+# active.json) are mutated by multiple clients on multiple machines. A plain
+# "read under flock, mutate locally, write under flock" cycle releases the lock
+# between the read and the write, so two concurrent writers can both read the
+# same state and silently overwrite each other's update (e.g. the same port
+# allocated twice).
+#
+# ``update_json_state_locked`` closes that gap with optimistic concurrency:
+# the read captures the file's content hash (computed remotely, under flock),
+# the mutation runs locally, and the write is a compare-and-swap — the staged
+# temp file is only ``mv``-ed into place (again under flock) if the file's hash
+# is unchanged. On a conflict the whole cycle retries with fresh state.
+# Replacing via ``mv`` needs only directory write permission, so file
+# ownership never matters (the issue #18 class of lockouts).
 
 # %%
 #|export
@@ -547,25 +557,6 @@ def _lock_path(ctx: RemoteContext | None = None) -> str:
     """Return the path to the remote lock file."""
     root = ctx.app_root if ctx else DEFAULT_APP_ROOT
     return f"{root}/.appgarden.lock"
-
-def read_garden_state_locked(host, ctx: RemoteContext | None = None) -> dict:
-    """Read garden state under flock."""
-    lock = _lock_path(ctx)
-    path = garden_state_path(ctx)
-    raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Corrupted garden.json on server: {e}. You may need to re-run 'server init'.")
-
-def write_garden_state_locked(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write garden state under flock (write tmp, then atomic mv under lock)."""
-    path = garden_state_path(ctx)
-    lock = _lock_path(ctx)
-    content = json.dumps(state, indent=2)
-    tmp = f"{path}.tmp"
-    write_remote_file(host, tmp, content)
-    run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
 
 def _raise_ports_permission_hint(e: Exception) -> None:
     """Re-raise a permission failure on the shared ports registry with a repair hint.
@@ -582,31 +573,128 @@ def _raise_ports_permission_hint(e: Exception) -> None:
 def _is_permission_denied(e: Exception) -> bool:
     return isinstance(e, PermissionError) or "permission denied" in str(e).lower()
 
-def read_ports_state_locked(host) -> dict:
-    """Read the host-level ports state under flock (shared across all gardens)."""
-    lock = HOST_PORTS_LOCK
-    path = ports_path()
-    try:
-        raw = run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} cat {shlex.quote(path)}")
-    except RuntimeError as e:
-        if _is_permission_denied(e):
-            _raise_ports_permission_hint(e)
-        raise
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Corrupted ports.json on server: {e}. You may need to re-run 'server init'.")
+def _is_missing_file(e: Exception) -> bool:
+    return isinstance(e, FileNotFoundError) or "no such file" in str(e).lower()
 
-def write_ports_state_locked(host, state: dict) -> None:
-    """Write the host-level ports state under flock (write tmp, then atomic mv)."""
-    path = ports_path()
-    lock = HOST_PORTS_LOCK
-    content = json.dumps(state, indent=2)
-    tmp = f"{path}.tmp"
-    try:
-        write_remote_file(host, tmp, content)
-        run_remote_command(host, f"flock -w 10 {shlex.quote(lock)} mv {shlex.quote(tmp)} {shlex.quote(path)}")
-    except (PermissionError, RuntimeError) as e:
-        if _is_permission_denied(e):
-            _raise_ports_permission_hint(e)
-        raise
+# %%
+#|export
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+def _locked_read_json_with_sha(host, path: str, lock: str) -> tuple[str, str]:
+    """Read a state file and its content hash atomically under flock.
+
+    Returns ``(sha256_hex, raw_content)``. The hash is computed remotely by
+    ``sha256sum`` so the later compare-and-swap compares like with like —
+    a locally computed hash could disagree about trailing newlines the SSH
+    transport normalises away.
+    """
+    q = shlex.quote
+    inner = f"sha256sum {q(path)} | cut -d' ' -f1 && cat {q(path)}"
+    out = run_remote_command(host, f"flock -w 10 {q(lock)} sh -c {q(inner)}")
+    sha, _, raw = out.partition("\n")
+    sha = sha.strip()
+    if not _SHA256_RE.match(sha):
+        raise RuntimeError(f"Unexpected sha256sum output reading {path}: {sha!r}")
+    return sha, raw
+
+def _cas_replace(host, path: str, lock: str, expected_sha: str | None, content: str) -> bool:
+    """Atomically replace *path* with *content* iff it is unchanged (compare-and-swap).
+
+    Stages *content* in a uniquely-named temp file, then — under flock — moves
+    it into place only if the file's current hash still equals *expected_sha*
+    (``None`` means the file must still be absent). Returns True on success,
+    False if the file changed since it was read (the temp file is cleaned up).
+    """
+    q = shlex.quote
+    tmp = f"{path}.tmp.{uuid.uuid4().hex[:8]}"
+    write_remote_file(host, tmp, content)
+    if expected_sha is None:
+        cond = f"[ ! -e {q(path)} ]"
+    else:
+        # expected_sha is validated hex (see _locked_read_json_with_sha), safe to embed.
+        cond = f"[ \"$(sha256sum {q(path)} | cut -d' ' -f1)\" = \"{expected_sha}\" ]"
+    inner = (
+        f"if {cond}; then mv {q(tmp)} {q(path)}; echo CAS_OK; "
+        f"else rm -f {q(tmp)}; echo CAS_CONFLICT; fi"
+    )
+    out = run_remote_command(host, f"flock -w 10 {q(lock)} sh -c {q(inner)}")
+    return "CAS_OK" in out
+
+# %%
+#|export
+def update_json_state_locked(
+    host,
+    path: str,
+    lock: str,
+    mutate,
+    *,
+    default: dict | None = None,
+    corrupt_hint: str | None = None,
+    on_permission=None,
+    retries: int = 5,
+) -> dict:
+    """Atomically apply ``mutate(state) -> state`` to a remote JSON state file.
+
+    Read → mutate → compare-and-swap write, retrying the whole cycle with
+    fresh state when a concurrent writer got there first, so no update is
+    ever silently lost. *default* seeds the state when the file doesn't
+    exist yet; without it a missing file is an error. *on_permission* is
+    called with the original exception on permission failures (to raise a
+    domain-specific hint). Exceptions raised by *mutate* propagate.
+    """
+    for _ in range(retries):
+        state = None
+        expected_sha: str | None = None
+        try:
+            expected_sha, raw = _locked_read_json_with_sha(host, path, lock)
+        except (PermissionError, RuntimeError) as e:
+            if _is_permission_denied(e):
+                if on_permission is not None:
+                    on_permission(e)
+                raise
+            if _is_missing_file(e):
+                if default is None:
+                    raise RuntimeError(
+                        f"State file {path} not found on server. "
+                        f"Run 'appgarden server init' first."
+                    ) from e
+                state = copy.deepcopy(default)
+            else:
+                raise
+        if state is None:
+            try:
+                state = json.loads(raw)
+            except json.JSONDecodeError as e:
+                hint = corrupt_hint or f"Corrupted state file on server: {path}"
+                raise RuntimeError(f"{hint} ({e})")
+        state = mutate(state)
+        content = json.dumps(state, indent=2)
+        try:
+            if _cas_replace(host, path, lock, expected_sha, content):
+                return state
+        except (PermissionError, RuntimeError) as e:
+            if _is_permission_denied(e) and on_permission is not None:
+                on_permission(e)
+            raise
+    raise RuntimeError(
+        f"State file {path} kept changing under concurrent updates; "
+        f"gave up after {retries} attempts."
+    )
+
+# %%
+#|export
+def update_garden_state_locked(host, mutate, ctx: RemoteContext | None = None) -> dict:
+    """Apply *mutate* to garden.json with the lock held across read-modify-write."""
+    path = garden_state_path(ctx)
+    return update_json_state_locked(
+        host, path, _lock_path(ctx), mutate,
+        corrupt_hint=f"Corrupted garden.json on server: {path}. You may need to re-run 'server init'.",
+    )
+
+def update_ports_state_locked(host, mutate) -> dict:
+    """Apply *mutate* to the host-level ports registry (shared across all gardens)."""
+    return update_json_state_locked(
+        host, ports_path(), HOST_PORTS_LOCK, mutate,
+        corrupt_hint="Corrupted ports.json on server. You may need to re-run 'server init'.",
+        on_permission=_raise_ports_permission_hint,
+    )

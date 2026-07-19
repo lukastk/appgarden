@@ -34,7 +34,7 @@ from appgarden.remote import (
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, read_remote_file, write_remote_file,
     run_sudo_command, write_system_file,
-    read_garden_state, read_ports_state_locked, write_ports_state_locked,
+    read_garden_state, update_ports_state_locked,
     garden_state_path, ports_path,
 )
 
@@ -360,9 +360,7 @@ def init_server(server: ServerConfig, *, skip: set[str] | None = None) -> None:
                        for name, entry in garden.get("apps", {}).items()
                        if entry.get("port") is not None}
         if allocations:
-            ports = read_ports_state_locked(host)
-            ports = merge_allocations(ports, allocations)
-            write_ports_state_locked(host, ports)
+            update_ports_state_locked(host, lambda ports: merge_allocations(ports, allocations))
             console.print(f"  [dim]Reconciled {len(allocations)} app port(s) into host registry[/dim]")
 
         # 12. Start Docker (conditional on docker being present)

@@ -29,7 +29,7 @@ import pytest
 
 from appgarden.config import ServerConfig
 from appgarden.tunnel import (
-    _read_tunnels_state, _write_tunnels_state,
+    _read_tunnels_state, _update_tunnels_state,
     _tunnel_caddy_path, _deploy_tunnel_caddy,
     _remove_tunnel_caddy, _register_tunnel, _unregister_tunnel,
     list_tunnels, close_tunnel,
@@ -54,9 +54,27 @@ def _mock_host(tunnels_state=None, ports_state=None):
         ports_state = {"next_port": 10000, "allocated": {}}
 
     host = MagicMock()
-    output_mock = MagicMock()
-    output_mock.stdout = ""
-    host.run_shell_command.return_value = (True, output_mock)
+
+    def _mock_run(command="", **kw):
+        import hashlib
+        output = MagicMock()
+        output.stdout = ""
+        # CAS writes (locked compare-and-swap update) always succeed
+        if "CAS_OK" in command:
+            output.stdout = "CAS_OK"
+        # Locked reads: sha + content of the requested state file
+        elif "sha256sum" in command:
+            if "active.json" in command:
+                payload = json.dumps(tunnels_state)
+            elif "ports.json" in command:
+                payload = json.dumps(ports_state)
+            else:
+                payload = json.dumps({"apps": {}})
+            sha = hashlib.sha256(payload.encode()).hexdigest()
+            output.stdout = f"{sha}\n{payload}"
+        return (True, output)
+
+    host.run_shell_command.side_effect = _mock_run
     host.put_file.return_value = True
 
     def _mock_get(remote_filename, filename_or_io, **kw):
@@ -94,34 +112,39 @@ def test_read_tunnels_state_with_tunnels():
 
 # %%
 #|export
-def test_write_tunnels_state():
-    """Writes tunnel state to the correct path."""
+def test_update_tunnels_state():
+    """Applies a mutation and stages it at the correct path."""
     host = _mock_host()
-    state = {"tunnels": {"t1": {"url": "a.example.com"}}}
-    _write_tunnels_state(host, state)
 
-    # Check put_file was called with the correct path
+    def add(state):
+        state["tunnels"]["t1"] = {"url": "a.example.com"}
+        return state
+
+    result = _update_tunnels_state(host, add)
+    assert result["tunnels"]["t1"] == {"url": "a.example.com"}
     calls = host.put_file.call_args_list
     assert any(TUNNELS_STATE_FILE in c.kwargs.get("remote_filename", "") for c in calls)
 
 # %%
 #|export
-def test_write_tunnels_state_via_tmp_and_mv():
-    """active.json is replaced via tmp + mv, never overwritten in place.
+def test_update_tunnels_state_via_tmp_and_cas_mv():
+    """active.json is replaced via a unique tmp + CAS mv, never overwritten in place.
 
     Replacing via mv needs only directory write permission, so a root-owned
     644 active.json (left by a root-entry tunnel op) can't lock out the box's
-    non-root deploy users — the same ownership disease as issue #18."""
+    non-root deploy users — the same ownership disease as issue #18. The CAS
+    (hash-guarded mv under flock) additionally means two concurrent tunnel
+    registrations can't lose each other's update."""
     host = _mock_host()
-    _write_tunnels_state(host, {"tunnels": {}})
+    _update_tunnels_state(host, lambda s: s)
 
-    # The upload must target the tmp file, not active.json itself...
+    # The upload must target a uniquely-named tmp file, not active.json itself...
     put_paths = [c.kwargs.get("remote_filename", "") for c in host.put_file.call_args_list]
-    assert f"{TUNNELS_STATE_FILE}.tmp" in put_paths
+    assert all(p.startswith(f"{TUNNELS_STATE_FILE}.tmp.") for p in put_paths)
     assert TUNNELS_STATE_FILE not in put_paths
-    # ...and an mv must move it into place.
+    # ...and a flock'd CAS mv must move it into place.
     cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
-    assert any("mv" in c and f"{TUNNELS_STATE_FILE}.tmp" in c and TUNNELS_STATE_FILE in c
+    assert any("flock" in c and "mv" in c and "CAS_OK" in c and TUNNELS_STATE_FILE in c
                for c in cmds)
 
 # %% [markdown]

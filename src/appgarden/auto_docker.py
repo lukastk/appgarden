@@ -231,7 +231,7 @@ def deploy_auto(
         if extra:
             reg_extra.update(extra)
         _register_app(
-            host, garden_state, name, "auto", url,
+            host, name, "auto", url,
             source=source, source_type=source_type,
             port=port, container_port=container_port,
             branch=branch, systemd_unit=unit_name,

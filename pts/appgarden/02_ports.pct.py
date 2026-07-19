@@ -32,8 +32,7 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 from appgarden.remote import (
-    read_ports_state, write_ports_state,
-    read_ports_state_locked, write_ports_state_locked,
+    read_ports_state, update_ports_state_locked,
 )
 
 # %% [markdown]
@@ -131,27 +130,31 @@ def merge_allocations(ports: dict, allocations: dict) -> dict:
 # %%
 #|export
 def allocate_port(host, app_name: str) -> int:
-    """Allocate a port on the remote host for *app_name*."""
-    ports = read_ports_state_locked(host)
-    ports, port = _allocate_port(ports, app_name)
-    write_ports_state_locked(host, ports)
-    return port
+    """Allocate a port on the remote host for *app_name*.
+
+    The read-modify-write runs as a locked compare-and-swap update, so two
+    concurrent allocations can never hand out the same port.
+    """
+    result: dict = {}
+
+    def _mut(ports: dict) -> dict:
+        ports, result["port"] = _allocate_port(ports, app_name)
+        return ports
+
+    update_ports_state_locked(host, _mut)
+    return result["port"]
 
 # %%
 #|export
 def release_port(host, app_name: str) -> None:
     """Release the port held by *app_name* on the remote host."""
-    ports = read_ports_state_locked(host)
-    ports = _release_port(ports, app_name)
-    write_ports_state_locked(host, ports)
+    update_ports_state_locked(host, lambda ports: _release_port(ports, app_name))
 
 # %%
 #|export
 def register_port(host, port: int, app_name: str) -> None:
     """Register a user-specified *port* for *app_name* on the remote host."""
-    ports = read_ports_state_locked(host)
-    ports = _register_port(ports, port, app_name)
-    write_ports_state_locked(host, ports)
+    update_ports_state_locked(host, lambda ports: _register_port(ports, port, app_name))
 
 # %%
 #|export

@@ -4,8 +4,7 @@ __all__ = ['PORT_RANGE_START', 'allocate_port', 'empty_ports_state', 'get_app_po
 
 # %% pts/appgarden/02_ports.pct.py 3
 from .remote import (
-    read_ports_state, write_ports_state,
-    read_ports_state_locked, write_ports_state_locked,
+    read_ports_state, update_ports_state_locked,
 )
 
 # %% pts/appgarden/02_ports.pct.py 5
@@ -81,25 +80,29 @@ def merge_allocations(ports: dict, allocations: dict) -> dict:
 
 # %% pts/appgarden/02_ports.pct.py 13
 def allocate_port(host, app_name: str) -> int:
-    """Allocate a port on the remote host for *app_name*."""
-    ports = read_ports_state_locked(host)
-    ports, port = _allocate_port(ports, app_name)
-    write_ports_state_locked(host, ports)
-    return port
+    """Allocate a port on the remote host for *app_name*.
+
+    The read-modify-write runs as a locked compare-and-swap update, so two
+    concurrent allocations can never hand out the same port.
+    """
+    result: dict = {}
+
+    def _mut(ports: dict) -> dict:
+        ports, result["port"] = _allocate_port(ports, app_name)
+        return ports
+
+    update_ports_state_locked(host, _mut)
+    return result["port"]
 
 # %% pts/appgarden/02_ports.pct.py 14
 def release_port(host, app_name: str) -> None:
     """Release the port held by *app_name* on the remote host."""
-    ports = read_ports_state_locked(host)
-    ports = _release_port(ports, app_name)
-    write_ports_state_locked(host, ports)
+    update_ports_state_locked(host, lambda ports: _release_port(ports, app_name))
 
 # %% pts/appgarden/02_ports.pct.py 15
 def register_port(host, port: int, app_name: str) -> None:
     """Register a user-specified *port* for *app_name* on the remote host."""
-    ports = read_ports_state_locked(host)
-    ports = _register_port(ports, port, app_name)
-    write_ports_state_locked(host, ports)
+    update_ports_state_locked(host, lambda ports: _register_port(ports, port, app_name))
 
 # %% pts/appgarden/02_ports.pct.py 16
 def get_app_port(host, app_name: str) -> int | None:

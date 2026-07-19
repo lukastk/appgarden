@@ -200,15 +200,15 @@ def test_port_funcs_share_one_registry(monkeypatch):
     # One in-memory store standing in for the single host-level ports.json.
     store = {"state": empty_ports_state()}
 
-    def fake_read_locked(host):
+    def fake_update_locked(host, mutate):
+        store["state"] = mutate(store["state"])
         return store["state"]
 
-    def fake_write_locked(host, state):
-        store["state"] = state
+    def fake_read(host):
+        return store["state"]
 
-    monkeypatch.setattr(ports_mod, "read_ports_state_locked", fake_read_locked)
-    monkeypatch.setattr(ports_mod, "write_ports_state_locked", fake_write_locked)
-    monkeypatch.setattr(ports_mod, "read_ports_state", fake_read_locked)
+    monkeypatch.setattr(ports_mod, "update_ports_state_locked", fake_update_locked)
+    monkeypatch.setattr(ports_mod, "read_ports_state", fake_read)
 
     # Two apps deployed from different gardens draw from the same counter.
     p_a = allocate_port(None, "app-a")

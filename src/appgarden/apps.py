@@ -13,7 +13,7 @@ from .remote import (
     APPGARDEN_ROOT,
     RemoteContext, make_remote_context,
     ssh_connect, run_remote_command, write_remote_file,
-    read_garden_state, write_garden_state, upload_directory,
+    read_garden_state, update_garden_state_locked, upload_directory,
     privileged_systemctl, privileged_remove_unit, privileged_journalctl,
 )
 from .routing import parse_url, remove_caddy_config
@@ -128,42 +128,46 @@ def get_app_metadata(host, name: str, ctx: RemoteContext | None = None) -> dict:
 # %% pts/appgarden/06_apps.pct.py 13
 def set_app_metadata(host, name: str, meta: dict, ctx: RemoteContext | None = None) -> None:
     """Replace the entire ``meta`` dict for an app."""
-    state = read_garden_state(host, ctx=ctx)
-    if name not in state.get("apps", {}):
-        raise ValueError(f"App '{name}' not found")
-    state["apps"][name]["meta"] = meta
-    write_garden_state(host, state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        if name not in state.get("apps", {}):
+            raise ValueError(f"App '{name}' not found")
+        state["apps"][name]["meta"] = meta
+        return state
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 14
 def update_app_metadata(host, name: str, updates: dict, ctx: RemoteContext | None = None) -> None:
     """Merge *updates* into the existing ``meta`` dict for an app."""
-    state = read_garden_state(host, ctx=ctx)
-    if name not in state.get("apps", {}):
-        raise ValueError(f"App '{name}' not found")
-    existing = state["apps"][name].get("meta", {})
-    existing.update(updates)
-    state["apps"][name]["meta"] = existing
-    write_garden_state(host, state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        if name not in state.get("apps", {}):
+            raise ValueError(f"App '{name}' not found")
+        existing = state["apps"][name].get("meta", {})
+        existing.update(updates)
+        state["apps"][name]["meta"] = existing
+        return state
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 15
 def remove_app_metadata_keys(host, name: str, keys: list[str], ctx: RemoteContext | None = None) -> None:
     """Delete specific keys from the ``meta`` dict for an app."""
-    state = read_garden_state(host, ctx=ctx)
-    if name not in state.get("apps", {}):
-        raise ValueError(f"App '{name}' not found")
-    existing = state["apps"][name].get("meta", {})
-    for k in keys:
-        existing.pop(k, None)
-    state["apps"][name]["meta"] = existing
-    write_garden_state(host, state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        if name not in state.get("apps", {}):
+            raise ValueError(f"App '{name}' not found")
+        existing = state["apps"][name].get("meta", {})
+        for k in keys:
+            existing.pop(k, None)
+        state["apps"][name]["meta"] = existing
+        return state
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 17
 def _update_app_status(host, name: str, status: str, ctx: RemoteContext | None = None) -> None:
-    """Update the status field for an app in garden.json."""
-    state = read_garden_state(host, ctx=ctx)
-    if name in state.get("apps", {}):
-        state["apps"][name]["status"] = status
-        write_garden_state(host, state, ctx=ctx)
+    """Update the status field for an app in garden.json (no-op if unregistered)."""
+    def _mut(state: dict) -> dict:
+        if name in state.get("apps", {}):
+            state["apps"][name]["status"] = status
+        return state
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/06_apps.pct.py 18
 def stop_app(host, name: str, ctx: RemoteContext | None = None) -> None:
@@ -235,9 +239,12 @@ def remove_app(host, name: str, keep_data: bool = False, ctx: RemoteContext | No
         except ValueError:
             pass
 
-    # 4. Remove from garden.json
-    del state["apps"][name]
-    write_garden_state(host, state, ctx=ctx)
+    # 4. Remove from garden.json (pop, not del: a concurrent remove of the same
+    # app just means the goal state — absent — is already reached)
+    def _mut(fresh: dict) -> dict:
+        fresh.get("apps", {}).pop(name, None)
+        return fresh
+    update_garden_state_locked(host, _mut, ctx=ctx)
 
     # 5. Remove app files
     adir = _app_dir(name, ctx)
@@ -315,9 +322,14 @@ def redeploy_app(server: ServerConfig, host, name: str, ctx: RemoteContext | Non
         # Static: Caddy serves files directly, just reload
         privileged_systemctl(host, "reload", "caddy", ctx=ctx)
 
-    # 4. Update timestamp and status
+    # 4. Update timestamp and status (on fresh state, so concurrent changes
+    # to other apps aren't clobbered by this slow operation's stale read)
     from datetime import datetime, timezone
-    entry["updated_at"] = datetime.now(timezone.utc).isoformat()
-    entry["status"] = "serving" if method == "static" else "active"
-    state["apps"][name] = entry
-    write_garden_state(host, state, ctx=ctx)
+    now = datetime.now(timezone.utc).isoformat()
+    def _mut(fresh: dict) -> dict:
+        fresh_entry = fresh.get("apps", {}).get(name)
+        if fresh_entry is not None:
+            fresh_entry["updated_at"] = now
+            fresh_entry["status"] = "serving" if method == "static" else "active"
+        return fresh
+    update_garden_state_locked(host, _mut, ctx=ctx)

@@ -23,6 +23,7 @@ from .remote import (
     APPGARDEN_ROOT,
     RemoteContext, make_remote_context,
     privileged_systemctl, caddy_tunnels_dir, tunnels_state_path,
+    tunnels_lock_path, update_json_state_locked,
 )
 from .ports import allocate_port, release_port
 from .routing import generate_caddy_config, CADDY_TUNNELS_DIR
@@ -72,20 +73,22 @@ def _read_tunnels_state(host, ctx: RemoteContext | None = None) -> dict:
     return json.loads(content)
 
 # %% pts/appgarden/09_tunnel.pct.py 13
-def _write_tunnels_state(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write the active tunnels state to the server (write tmp, then atomic mv).
+def _update_tunnels_state(host, mutate, ctx: RemoteContext | None = None) -> dict:
+    """Apply *mutate* to active.json as a locked compare-and-swap update.
 
-    Like garden.json and the host ports registry, replacing the file via mv
-    needs only directory write permission, so the file's ownership never
-    matters. A direct SFTP overwrite instead needs write permission on the
-    file itself, so whichever server entry (root vs non-root deploy user)
-    wrote active.json last would lock the others out — same disease as the
-    host ports registry in issue #18.
+    Replacing the file via mv needs only directory write permission, so the
+    file's ownership never matters (a direct SFTP overwrite would let a
+    root-entry write lock out the box's non-root deploy users — same disease
+    as the host ports registry in issue #18), and the CAS retry means two
+    tunnels opened concurrently can't lose each other's registration.
+    The file is created on first use (``default``).
     """
     path = tunnels_state_path(ctx) if ctx else TUNNELS_STATE_FILE
-    tmp = f"{path}.tmp"
-    write_remote_file(host, tmp, json.dumps(state, indent=2))
-    run_remote_command(host, f"mv {shlex.quote(tmp)} {shlex.quote(path)}")
+    return update_json_state_locked(
+        host, path, tunnels_lock_path(ctx), mutate,
+        default={"tunnels": {}},
+        corrupt_hint=f"Corrupted tunnels state on server: {path}",
+    )
 
 # %% pts/appgarden/09_tunnel.pct.py 15
 def _tunnel_caddy_path(tunnel_id: str, ctx: RemoteContext | None = None) -> str:
@@ -135,21 +138,24 @@ def _remove_tunnel_caddy(host, tunnel_id: str, ctx: RemoteContext | None = None)
 # %% pts/appgarden/09_tunnel.pct.py 18
 def _register_tunnel(host, tunnel_id: str, url: str, local_port: int, remote_port: int, ctx: RemoteContext | None = None) -> None:
     """Record the tunnel in active.json."""
-    state = _read_tunnels_state(host, ctx=ctx)
-    state["tunnels"][tunnel_id] = {
+    entry = {
         "url": url,
         "local_port": local_port,
         "remote_port": remote_port,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    _write_tunnels_state(host, state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        state.setdefault("tunnels", {})[tunnel_id] = entry
+        return state
+    _update_tunnels_state(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/09_tunnel.pct.py 19
 def _unregister_tunnel(host, tunnel_id: str, ctx: RemoteContext | None = None) -> None:
     """Remove the tunnel from active.json."""
-    state = _read_tunnels_state(host, ctx=ctx)
-    state["tunnels"].pop(tunnel_id, None)
-    _write_tunnels_state(host, state, ctx=ctx)
+    def _mut(state: dict) -> dict:
+        state.setdefault("tunnels", {}).pop(tunnel_id, None)
+        return state
+    _update_tunnels_state(host, _mut, ctx=ctx)
 
 # %% pts/appgarden/09_tunnel.pct.py 21
 def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str, ctx: RemoteContext | None = None) -> None:

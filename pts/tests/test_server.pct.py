@@ -65,15 +65,24 @@ def _make_host_mock(*, state_files_exist=True, caddyfile_content="",
     fail_output.stderr = ""
 
     def run_shell_side_effect(**kwargs):
+        import hashlib
         cmd = kwargs.get("command", "")
         if cmd.startswith("test -f") and not state_files_exist:
             return (False, fail_output)
         if cmd.startswith("cat /etc/caddy/Caddyfile"):
             out = MagicMock(); out.stdout = caddyfile_content
             return (True, out)
-        if "flock" in cmd and "cat" in cmd:
+        if "CAS_OK" in cmd:
+            out = MagicMock(); out.stdout = "CAS_OK"
+            return (True, out)
+        if ("flock" in cmd and "cat" in cmd) or "sha256sum" in cmd:
+            payload = json.dumps(ports_state if "ports.json" in cmd else garden_state)
             out = MagicMock()
-            out.stdout = json.dumps(ports_state if "ports.json" in cmd else garden_state)
+            if "sha256sum" in cmd:
+                sha = hashlib.sha256(payload.encode()).hexdigest()
+                out.stdout = f"{sha}\n{payload}"
+            else:
+                out.stdout = payload
             return (True, out)
         return (True, ok_output)
 
@@ -445,7 +454,7 @@ def test_init_server_reconciles_existing_app_ports():
 
     # The reconciled host registry is written back with both app ports.
     written_files = _get_written_files(host_mock)
-    # write_ports_state_locked writes a tmp file then mv's it into place
+    # update_ports_state_locked stages a unique tmp file then CAS-mv's it into place
     tmp = next((c for p, c in written_files.items() if p.startswith(PORTS_PATH)), None)
     assert tmp is not None, f"expected a host ports.json write, got {list(written_files)}"
     state = json.loads(tmp)

@@ -26,9 +26,8 @@ from unittest.mock import MagicMock, patch, call
 
 from appgarden.remote import (
     read_remote_file, write_remote_file, run_remote_command,
-    read_garden_state, write_garden_state,
-    read_ports_state, write_ports_state,
-    read_ports_state_locked, write_ports_state_locked,
+    read_garden_state, read_ports_state,
+    update_garden_state_locked, update_ports_state_locked, update_json_state_locked,
     GARDEN_STATE_PATH, PORTS_PATH, HOST_STATE_DIR, PRIVILEGED_HELPER_PATH,
     DEFAULT_APP_ROOT, RemoteContext, make_remote_context,
     run_sudo_command, write_system_file,
@@ -121,106 +120,185 @@ def test_run_remote_command_failure():
         run_remote_command(host, "bad command")
 
 # %% [markdown]
-# ## Garden state round-trip
+# ## Locked compare-and-swap state updates
+#
+# The updater must: hold the read and the write under flock with a hash
+# compare-and-swap in between (so concurrent writers can't lose updates),
+# stage content in a uniquely-named temp file moved into place with `mv`
+# (so file ownership never matters — issue #18), retry on conflict, and
+# seed from `default` when the file doesn't exist yet.
 
 # %%
 #|export
-def test_garden_state_roundtrip():
-    """read/write garden state serialises JSON correctly."""
-    state_data = {"apps": {"myapp": {"name": "myapp", "method": "static"}}}
-    written_bytes = None
+import hashlib
 
+def _cas_host(initial: dict, *, missing: bool = False, conflicts: int = 0):
+    """Mock host speaking the locked-read + CAS protocol for one state file.
+
+    ``conflicts`` makes the first N CAS attempts report CAS_CONFLICT.
+    ``missing`` makes reads fail like the file doesn't exist.
+    """
     host = MagicMock()
+    state_json = json.dumps(initial)
+    remaining = {"conflicts": conflicts, "reads": 0}
+    written: dict[str, str] = {}
 
-    # Capture what write_garden_state sends (BytesIO)
-    def mock_put(filename_or_io, remote_filename, **kw):
-        nonlocal written_bytes
-        written_bytes = filename_or_io.getvalue()
+    def _run(command="", **kw):
+        out = MagicMock()
+        out.stderr = ""
+        if "CAS_OK" in command:
+            if remaining["conflicts"] > 0:
+                remaining["conflicts"] -= 1
+                out.stdout = "CAS_CONFLICT"
+            else:
+                out.stdout = "CAS_OK"
+            return (True, out)
+        if "sha256sum" in command and "cat" in command:
+            remaining["reads"] += 1
+            if missing:
+                out.stdout = ""
+                out.stderr = "sha256sum: can't open file: No such file or directory"
+                return (False, out)
+            out.stdout = hashlib.sha256(state_json.encode()).hexdigest() + "\n" + state_json
+            return (True, out)
+        out.stdout = ""
+        return (True, out)
+
+    host.run_shell_command.side_effect = _run
+
+    def _put(filename_or_io, remote_filename, **kw):
+        written[remote_filename] = filename_or_io.getvalue().decode("utf-8")
         return True
-    host.put_file.side_effect = mock_put
 
-    write_garden_state(host, state_data)
-    assert written_bytes is not None
-    assert json.loads(written_bytes.decode("utf-8")) == state_data
-
-    # Now mock read to return what was written (bytes into BytesIO)
-    def mock_get(remote_filename, filename_or_io, **kw):
-        filename_or_io.write(written_bytes)
-        return True
-    host.get_file.side_effect = mock_get
-
-    loaded = read_garden_state(host)
-    assert loaded == state_data
-
-# %% [markdown]
-# ## Ports state round-trip
+    host.put_file.side_effect = _put
+    host._written = written
+    host._counters = remaining
+    return host
 
 # %%
 #|export
-def test_ports_state_roundtrip():
-    """read/write ports state serialises JSON correctly."""
-    ports_data = {"next_port": 10002, "allocated": {"10000": "app1", "10001": "app2"}}
-    written_bytes = None
+def test_update_garden_state_applies_mutation():
+    """The mutation lands, staged via a unique tmp file and a CAS mv."""
+    host = _cas_host({"apps": {}})
 
-    host = MagicMock()
+    def add_app(state):
+        state["apps"]["myapp"] = {"method": "static"}
+        return state
 
-    def mock_put(filename_or_io, remote_filename, **kw):
-        nonlocal written_bytes
-        written_bytes = filename_or_io.getvalue()
-        return True
-    host.put_file.side_effect = mock_put
+    result = update_garden_state_locked(host, add_app)
+    assert result["apps"]["myapp"] == {"method": "static"}
 
-    write_ports_state(host, ports_data)
-    assert json.loads(written_bytes.decode("utf-8")) == ports_data
+    # Staged to a uniquely-named tmp under the state path, never in place
+    tmp_paths = list(host._written)
+    assert len(tmp_paths) == 1
+    assert tmp_paths[0].startswith(f"{GARDEN_STATE_PATH}.tmp.")
+    assert json.loads(host._written[tmp_paths[0]])["apps"]["myapp"] == {"method": "static"}
 
-    def mock_get(remote_filename, filename_or_io, **kw):
-        filename_or_io.write(written_bytes)
-        return True
-    host.get_file.side_effect = mock_get
+    # The CAS command mv's the tmp into place under flock
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    cas = [c for c in cmds if "CAS_OK" in c]
+    assert len(cas) == 1
+    assert "flock" in cas[0] and "mv" in cas[0] and GARDEN_STATE_PATH in cas[0]
 
-    loaded = read_ports_state(host)
-    assert loaded == ports_data
+# %%
+#|export
+def test_update_garden_state_with_ctx_path():
+    """A custom app_root routes the update to that garden's files."""
+    ctx = RemoteContext(app_root="/opt/garden")
+    host = _cas_host({"apps": {}})
+    update_garden_state_locked(host, lambda s: s, ctx=ctx)
+    tmp_paths = list(host._written)
+    assert tmp_paths[0].startswith("/opt/garden/garden.json.tmp.")
+
+# %%
+#|export
+def test_update_state_retries_on_conflict():
+    """A CAS conflict re-reads fresh state and retries the mutation."""
+    host = _cas_host({"apps": {}}, conflicts=1)
+    update_garden_state_locked(host, lambda s: s)
+    # Two reads: initial + post-conflict retry
+    assert host._counters["reads"] == 2
+    # Two staged tmp files (one discarded by the failed CAS)
+    assert len(host._written) == 2
+
+# %%
+#|export
+def test_update_state_conflict_exhaustion_raises():
+    """Persistent conflicts fail loudly instead of spinning forever."""
+    import pytest
+    host = _cas_host({"apps": {}}, conflicts=99)
+    with pytest.raises(RuntimeError, match="kept changing"):
+        update_garden_state_locked(host, lambda s: s)
+
+# %%
+#|export
+def test_update_state_missing_file_seeds_default():
+    """With a default, a missing state file is seeded and created via CAS."""
+    host = _cas_host({}, missing=True)
+
+    def add(state):
+        state["tunnels"]["t1"] = {"url": "x"}
+        return state
+
+    result = update_json_state_locked(
+        host, "/srv/appgarden/tunnels/active.json",
+        "/srv/appgarden/tunnels/.tunnels.lock", add,
+        default={"tunnels": {}},
+    )
+    assert result == {"tunnels": {"t1": {"url": "x"}}}
+    # The create-CAS guards on the file still being absent
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    cas = [c for c in cmds if "CAS_OK" in c]
+    assert len(cas) == 1 and "! -e" in cas[0]
+
+# %%
+#|export
+def test_update_state_missing_file_without_default_raises():
+    """Without a default, a missing state file is a loud error pointing at init."""
+    import pytest
+    host = _cas_host({}, missing=True)
+    with pytest.raises(RuntimeError, match="server init"):
+        update_garden_state_locked(host, lambda s: s)
+
+# %%
+#|export
+def test_update_state_mutation_error_propagates():
+    """Exceptions from the mutation (e.g. app-not-found) propagate unchanged."""
+    import pytest
+    host = _cas_host({"apps": {}})
+
+    def boom(state):
+        raise ValueError("App 'ghost' not found")
+
+    with pytest.raises(ValueError, match="ghost"):
+        update_garden_state_locked(host, boom)
 
 # %% [markdown]
 # ## Locked ports state: permission-denied hint (issue #18)
 #
 # When the shared host ports registry is unwritable (its ownership was stamped
 # by an older `server init` run as a different user), the raw failure is an
-# opaque `Permission denied` deep in pyinfra/flock. Both locked accessors
-# translate it into an error that points at re-running `server init`.
+# opaque `Permission denied` deep in pyinfra/flock. The locked updater
+# translates it into an error that points at re-running `server init`.
 
 # %%
 #|export
-def test_write_ports_state_locked_permission_hint():
-    """An SFTP PermissionError writing the registry tmp file becomes a hint to
+def test_update_ports_state_sftp_permission_hint():
+    """An SFTP PermissionError staging the registry tmp file becomes a hint to
     re-run server init."""
     import pytest
-    host = MagicMock()
+    host = _cas_host({"next_port": 10000, "allocated": {}})
     host.put_file.side_effect = PermissionError(13, "Permission denied")
 
     with pytest.raises(RuntimeError) as excinfo:
-        write_ports_state_locked(host, {"next_port": 10000, "allocated": {}})
+        update_ports_state_locked(host, lambda p: p)
     assert HOST_STATE_DIR in str(excinfo.value)
     assert "server init" in str(excinfo.value)
 
 # %%
 #|export
-def test_write_ports_state_locked_flock_permission_hint():
-    """A 'Permission denied' from the remote flock/mv also gets the hint."""
-    import pytest
-    host = MagicMock()
-    host.put_file.return_value = True
-    output_mock = MagicMock()
-    output_mock.stderr = "mv: cannot move 'ports.json.tmp': Permission denied"
-    host.run_shell_command.return_value = (False, output_mock)
-
-    with pytest.raises(RuntimeError, match="server init"):
-        write_ports_state_locked(host, {"next_port": 10000, "allocated": {}})
-
-# %%
-#|export
-def test_read_ports_state_locked_permission_hint():
-    """A 'Permission denied' creating the lock file on read gets the hint."""
+def test_update_ports_state_read_permission_hint():
+    """A 'Permission denied' on the locked read gets the hint."""
     import pytest
     host = MagicMock()
     output_mock = MagicMock()
@@ -228,11 +306,31 @@ def test_read_ports_state_locked_permission_hint():
     host.run_shell_command.return_value = (False, output_mock)
 
     with pytest.raises(RuntimeError, match="server init"):
-        read_ports_state_locked(host)
+        update_ports_state_locked(host, lambda p: p)
 
 # %%
 #|export
-def test_ports_state_locked_other_errors_unchanged():
+def test_update_ports_state_cas_permission_hint():
+    """A 'Permission denied' from the CAS mv also gets the hint."""
+    import pytest
+    host = _cas_host({"next_port": 10000, "allocated": {}})
+    inner = host.run_shell_command.side_effect
+
+    def _run(command="", **kw):
+        if "CAS_OK" in command:
+            out = MagicMock()
+            out.stdout = ""
+            out.stderr = "mv: cannot move tmp: Permission denied"
+            return (False, out)
+        return inner(command=command, **kw)
+
+    host.run_shell_command.side_effect = _run
+    with pytest.raises(RuntimeError, match="server init"):
+        update_ports_state_locked(host, lambda p: p)
+
+# %%
+#|export
+def test_update_ports_state_other_errors_unchanged():
     """Non-permission failures keep the original error, not the hint."""
     import pytest
     host = MagicMock()
@@ -241,7 +339,7 @@ def test_ports_state_locked_other_errors_unchanged():
     host.run_shell_command.return_value = (False, output_mock)
 
     with pytest.raises(RuntimeError, match="Remote command failed"):
-        read_ports_state_locked(host)
+        update_ports_state_locked(host, lambda p: p)
 
 # %% [markdown]
 # ## RemoteContext
@@ -408,22 +506,14 @@ def test_write_system_file_with_sudo():
     assert kwargs["filename_or_io"].getvalue() == b"content"
 
 # %% [markdown]
-# ## Garden/ports state with custom ctx
+# ## Garden state read with custom ctx
 
 # %%
 #|export
-def test_garden_state_with_ctx():
-    """read/write garden state uses custom path from ctx."""
+def test_read_garden_state_with_ctx():
+    """read_garden_state uses the custom path from ctx."""
     ctx = RemoteContext(app_root="/opt/garden")
     host = MagicMock()
-
-    # Write
-    host.put_file.return_value = True
-    write_garden_state(host, {"apps": {}}, ctx=ctx)
-    put_path = host.put_file.call_args.kwargs["remote_filename"]
-    assert put_path == "/opt/garden/garden.json"
-
-    # Read
     host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
         filename_or_io.write(b'{"apps": {}}') or True
     )
