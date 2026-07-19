@@ -30,7 +30,7 @@ from appgarden.remote import RemoteContext, PORTS_PATH, HOST_STATE_DIR
 from appgarden.ports import empty_ports_state
 from appgarden.server import (
     ping_server, init_server, INIT_STEPS,
-    CADDYFILE_CONTENT, CADDYFILE_TEMPLATE, CADDYFILE_MARKER_BEGIN, CADDYFILE_MARKER_END,
+    CADDYFILE_TEMPLATE, CADDYFILE_MARKER_BEGIN, CADDYFILE_MARKER_END,
     SSH_HARDENING_CONTENT, _ensure_caddyfile_block,
 )
 
@@ -510,6 +510,77 @@ def test_init_server_seeds_registry_from_legacy_ports():
     seeded = json.loads(written_files[PORTS_PATH])
     assert seeded["allocated"].get("10060") == "tunnel-abc"
     assert seeded["next_port"] == 10061
+
+    # The migrated legacy file is renamed aside so it can't confuse anyone later
+    cmds = _get_cmds(host_mock)
+    assert any("mv /srv/appgarden/ports.json /srv/appgarden/ports.json.migrated" in c
+               for c in cmds), f"expected legacy ports.json to be archived; cmds: {cmds}"
+
+# %%
+#|export
+def test_init_server_corrupt_legacy_ports_fails_loudly():
+    """A corrupt legacy ports.json aborts init instead of silently seeding an
+    empty registry (which would lose live reservations -> port collisions)."""
+    host_mock = _make_host_mock(state_files_exist=False)
+
+    def _get_corrupt(remote_filename, filename_or_io, **kw):
+        filename_or_io.write(b"{not valid json")
+        return True
+    host_mock.get_file.side_effect = _get_corrupt
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="corrupted"):
+            init_server(_make_server())
+
+# %%
+#|export
+def test_init_server_group_step_scoped_to_managed_subtree():
+    """The group step shares only the appgarden-managed subtree (apps/, caddy/,
+    tunnels/ plus app_root non-recursively) — never a blanket -R over app_root,
+    which may contain foreign files init must not take over. .env files are
+    re-tightened to 600 after the recursive g+rwX (issue #26)."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server(), skip=set())  # group enabled
+
+    cmds = _get_cmds(host_mock)
+    group_cmds = [c for c in cmds if "chgrp" in c]
+    assert group_cmds, f"expected a group-sharing command; cmds: {cmds}"
+    gc = group_cmds[0]
+    # Recursive sharing targets the managed subtrees...
+    assert "chgrp -R appgarden /srv/appgarden/apps" in gc
+    assert "/srv/appgarden/caddy" in gc and "/srv/appgarden/tunnels" in gc
+    # ...app_root itself only non-recursively...
+    assert "chgrp appgarden /srv/appgarden &&" in gc
+    assert "chgrp -R appgarden /srv/appgarden &&" not in gc
+    # ...and .env secrets stay 600
+    assert "-name .env" in gc and "chmod 600" in gc
+
+    # The ownership step is scoped the same way
+    chown_cmds = [c for c in cmds if "chown root:appgarden /srv/appgarden &&" in c]
+    assert chown_cmds and "chown -R root:appgarden /srv/appgarden/apps" in chown_cmds[0]
+
+# %%
+#|export
+def test_init_server_reloads_caddy_not_restart():
+    """Init reloads Caddy when it's already running; a hard restart would drop
+    connections for every app on the box each time any garden re-runs init."""
+    host_mock = _make_host_mock()
+
+    with patch("appgarden.server.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host_mock)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        init_server(_make_server())
+
+    cmds = _get_cmds(host_mock)
+    assert any("systemctl reload caddy || systemctl restart caddy" in c for c in cmds)
+    # No unconditional restart
+    assert not any("systemctl restart caddy" in c and "reload" not in c for c in cmds)
 
 # %% [markdown]
 # ## Step skipping
