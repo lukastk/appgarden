@@ -17,7 +17,8 @@ from nblite import nbl_export; nbl_export();
 # # Port Management
 #
 # Allocate, release, and register ports on a remote server.
-# Port state is stored in `/srv/appgarden/ports.json`:
+# Port state is box-global (shared by every garden on a host) and stored in
+# `/var/lib/appgarden/ports.json`:
 #
 # ```json
 # {

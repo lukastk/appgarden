@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-AppGarden is a Python CLI tool for deploying web applications to remote servers. It uses `pyinfra` for remote operations over SSH and `Caddy` as a reverse proxy with automatic HTTPS. See `PROJECT_SPEC.md` for the full specification and `PROJECT_PLAN.md` for the implementation plan.
+AppGarden is a Python CLI tool for deploying web applications to remote servers. It uses `pyinfra` for remote operations over SSH and `Caddy` as a reverse proxy with automatic HTTPS. See `README.md` for user-facing documentation and `SKILL.md` for the agent skill guide.
 
 ## nblite Project — Critical Rules
 
@@ -21,8 +21,6 @@ appgarden/
 ├── nblite.toml                    # nblite export pipeline config
 ├── pyproject.toml                 # Project metadata, dependencies, CLI entry point
 ├── CLAUDE.md                      # This file
-├── PROJECT_SPEC.md                # Full project specification
-├── PROJECT_PLAN.md                # Phased implementation plan
 ├── NBLITE_INSTRUCTIONS.md         # nblite usage guide
 ├── nbs/                           # Jupyter notebooks (auto-synced from pts/)
 │   ├── appgarden/                 # Main package notebooks
@@ -39,7 +37,8 @@ appgarden/
 │   │   ├── 07_auto_docker.pct.py  # Auto Dockerfile generation
 │   │   ├── 08_environments.pct.py # Environment handling
 │   │   ├── 09_tunnel.pct.py       # Localhost tunneling
-│   │   └── 10_cli.pct.py          # Typer CLI entry point
+│   │   ├── 10_cli.pct.py          # Typer CLI entry point
+│   │   └── _dir_server.pct.py     # Filtered dir HTTP server (tunnel --serve)
 │   └── tests/                     # Test notebooks
 │       ├── test_apps.pct.py       # Unit tests
 │       ├── test_auto_docker.pct.py
@@ -47,6 +46,7 @@ appgarden/
 │       ├── test_deploy.pct.py
 │       ├── test_environments.pct.py
 │       ├── test_ports.pct.py
+│       ├── test_privileged_wrapper.pct.py
 │       ├── test_remote.pct.py
 │       ├── test_routing.pct.py
 │       ├── test_server.pct.py
@@ -61,13 +61,14 @@ appgarden/
 │   │   ├── config.py
 │   │   ├── remote.py
 │   │   ├── ...
-│   │   └── templates/             # Static Jinja2 templates (NOT auto-generated)
+│   │   └── templates/             # Static assets (NOT auto-generated)
 │   │       ├── systemd.service.j2
 │   │       ├── docker-compose.yml.j2
 │   │       ├── Dockerfile.j2
 │   │       ├── Caddyfile.subdomain.j2
 │   │       ├── Caddyfile.subdirectory.j2
-│   │       └── Caddyfile.static.j2
+│   │       ├── Caddyfile.static.j2
+│   │       └── appgarden-privileged   # sudo wrapper installed by server init
 │   └── tests/
 ├── test_app/                      # Sample project with appgarden.toml
 ├── SKILL.md                       # Agent skill guide for using appgarden
@@ -122,12 +123,12 @@ Integration tests require a `.env` file in the repo root (see `.env.sample`). Th
 - `pyinfra` — Remote server operations over SSH
 - `jinja2` — Template rendering for Caddy/systemd/Docker configs
 - `rich` — Terminal output (tables, progress bars, colors)
-- `tomli` — TOML parsing (for config files)
+- `tomllib` (stdlib) / `tomli-w` — TOML parsing/writing (for config files)
 
 ## Architecture Notes
 
 - **Agentless**: No daemon on the server. All operations run locally via pyinfra over SSH.
-- **Remote state**: App registry and config stored on server at `/srv/appgarden/`
+- **Remote state**: Per-garden app registry under the garden's `app_root` (default `/srv/appgarden/`); the box-global ports registry lives at `/var/lib/appgarden/ports.json` (shared by all gardens on a host).
 - **Caddy**: Each app gets an explicit `.caddy` file; Caddy obtains TLS certs on reload.
 - **Deployment methods**: `static`, `command`, `dockerfile`, `docker-compose`, `auto`
 - **Templates**: Jinja2 templates in `src/appgarden/templates/` generate systemd units, Caddyfiles, Dockerfiles, and docker-compose files.

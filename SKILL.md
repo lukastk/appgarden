@@ -65,7 +65,6 @@ Remote state and resources are under `app_root`, usually:
 
 ```text
 /srv/appgarden/garden.json          # app registry
-/srv/appgarden/ports.json           # allocated ports
 /srv/appgarden/apps/<name>/         # per-app files/source/app.json/.env/data
 /srv/appgarden/caddy/apps/*.caddy   # deployed app Caddy snippets
 /srv/appgarden/caddy/tunnels/*.caddy

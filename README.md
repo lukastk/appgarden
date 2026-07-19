@@ -45,7 +45,7 @@ appgarden server add myserver \
 appgarden server init myserver
 ```
 
-This installs Docker, Caddy, configures UFW, SSH hardening, fail2ban, and sets up the AppGarden directory structure.
+This installs Docker and Caddy, enables unattended-upgrades, and sets up the AppGarden directory structure and state files. UFW firewall, SSH hardening, fail2ban, and the appgarden group step are **opt-in** — enable them with `--include firewall --include ssh --include fail2ban` (see `appgarden server init --help`).
 
 ### 3. Deploy an app
 
@@ -303,7 +303,7 @@ container_port = 3000       # Container port (for dockerfile/auto methods). Defa
 cmd = "npm start"           # Start command (for command/auto methods).
 setup_cmd = "npm ci"        # Setup/install command (for auto method).
 branch = "main"             # Git branch (for git sources).
-env_file = ".env.production"  # Path to .env file (relative to project dir). Overridden by env/--env.
+env_file = ".env.production"  # Path to .env file (relative to project dir). Overrides toml `env`; CLI --envvar overrides both.
 gitignore = true            # Filter uploads using .gitignore (default: true).
 
 # Dict fields — merged (env-level overrides app-level keys):
@@ -396,7 +396,7 @@ appgarden server add <name> --hcloud-name <name> --hcloud-context <ctx> --domain
 appgarden server list
 appgarden server remove <name>
 appgarden server default <name>
-appgarden server init [name]
+appgarden server init [name] [--skip STEP] [--include STEP] [--minimal]
 appgarden server ping [name]
 ```
 
@@ -476,7 +476,7 @@ CLI flags always take precedence over environment variables.
 - **Agentless**: No daemon on the server. All operations run locally via pyinfra over SSH.
 - **Remote state**: App registry stored on server at `/srv/appgarden/garden.json`.
 - **Caddy**: Each app gets a `.caddy` config file; Caddy obtains TLS certificates automatically.
-- **Port allocation**: Starting from port 10000, managed via `/srv/appgarden/ports.json`.
+- **Port allocation**: Starting from port 10000, managed via the box-global registry `/var/lib/appgarden/ports.json` (shared by all gardens on a host).
 - **Systemd**: Non-static apps run as systemd services for automatic restarts and log management.
 
 ## Non-Root User Setup
@@ -582,11 +582,13 @@ usermod -aG docker newuser  # if deploying Docker apps
 
 ## Security
 
-- SSH key-only authentication, hardened sshd config
-- UFW firewall: default deny, allow SSH/HTTP/HTTPS
-- Fail2ban for SSH brute-force protection
-- Automatic security updates via unattended-upgrades
-- Privileged wrapper restricts non-root users to appgarden-scoped operations only
+- Automatic security updates via unattended-upgrades (on by default)
+- Opt-in via `server init --include`: hardened sshd config (`ssh`), UFW firewall with
+  default deny + allow SSH/HTTP/HTTPS (`firewall`), fail2ban for SSH brute-force
+  protection (`fail2ban`) — a plain `server init` does NOT enable these
+- Privileged wrapper scopes routine sudo use to appgarden operations; note it installs
+  caller-provided systemd units that run as root, so appgarden-group members are
+  effectively root-equivalent — only add trusted deploy users
 - Environment files stored with 600 permissions
 - Docker isolation for container-based apps
 - TLS via Caddy's automatic HTTPS (HTTP-01 challenge)
