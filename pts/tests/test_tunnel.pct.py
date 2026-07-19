@@ -104,6 +104,26 @@ def test_write_tunnels_state():
     calls = host.put_file.call_args_list
     assert any(TUNNELS_STATE_FILE in c.kwargs.get("remote_filename", "") for c in calls)
 
+# %%
+#|export
+def test_write_tunnels_state_via_tmp_and_mv():
+    """active.json is replaced via tmp + mv, never overwritten in place.
+
+    Replacing via mv needs only directory write permission, so a root-owned
+    644 active.json (left by a root-entry tunnel op) can't lock out the box's
+    non-root deploy users — the same ownership disease as issue #18."""
+    host = _mock_host()
+    _write_tunnels_state(host, {"tunnels": {}})
+
+    # The upload must target the tmp file, not active.json itself...
+    put_paths = [c.kwargs.get("remote_filename", "") for c in host.put_file.call_args_list]
+    assert f"{TUNNELS_STATE_FILE}.tmp" in put_paths
+    assert TUNNELS_STATE_FILE not in put_paths
+    # ...and an mv must move it into place.
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("mv" in c and f"{TUNNELS_STATE_FILE}.tmp" in c and TUNNELS_STATE_FILE in c
+               for c in cmds)
+
 # %% [markdown]
 # ## Caddy config
 

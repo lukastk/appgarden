@@ -109,9 +109,19 @@ def _read_tunnels_state(host, ctx: RemoteContext | None = None) -> dict:
 # %%
 #|export
 def _write_tunnels_state(host, state: dict, ctx: RemoteContext | None = None) -> None:
-    """Write the active tunnels state to the server."""
+    """Write the active tunnels state to the server (write tmp, then atomic mv).
+
+    Like garden.json and the host ports registry, replacing the file via mv
+    needs only directory write permission, so the file's ownership never
+    matters. A direct SFTP overwrite instead needs write permission on the
+    file itself, so whichever server entry (root vs non-root deploy user)
+    wrote active.json last would lock the others out — same disease as the
+    host ports registry in issue #18.
+    """
     path = tunnels_state_path(ctx) if ctx else TUNNELS_STATE_FILE
-    write_remote_file(host, path, json.dumps(state, indent=2))
+    tmp = f"{path}.tmp"
+    write_remote_file(host, tmp, json.dumps(state, indent=2))
+    run_remote_command(host, f"mv {shlex.quote(tmp)} {shlex.quote(path)}")
 
 # %% [markdown]
 # ## open_tunnel
