@@ -165,3 +165,104 @@ def test_generate_dockerfile_python():
     assert "COPY requirements.txt ." in content
     assert "RUN pip install -r requirements.txt" in content
     assert "EXPOSE 5000" in content
+
+# %% [markdown]
+# ## deploy_auto (orchestration)
+
+# %%
+#|export
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from appgarden.auto_docker import deploy_auto
+from appgarden.config import ServerConfig
+from test_deploy import _stateful_host
+
+def _auto_server():
+    return ServerConfig(
+        ssh_user="root", ssh_key="~/.ssh/id_rsa",
+        domain="apps.example.com", host="1.2.3.4",
+    )
+
+def _staged_files(host):
+    written = {}
+    for c in host.put_file.call_args_list:
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[c.kwargs.get("remote_filename", "")] = bio.getvalue().decode("utf-8")
+    return written
+
+# %%
+#|export
+def test_deploy_auto_remote_detection_and_register():
+    """Git-sourced deploy_auto detects the runtime via remote indicator probes,
+    builds the image, and registers method=auto with the detected runtime."""
+    host = _stateful_host()
+
+    with patch("appgarden.auto_docker.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        deploy_auto(_auto_server(), "autoapp", "https://github.com/x/y.git",
+                    "npm start", "auto.apps.example.com")
+
+    entry = host._state["garden"]["apps"]["autoapp"]
+    assert entry["method"] == "auto"
+    # First indicator probe (package.json) succeeds against the mock -> nodejs
+    assert entry["auto_detected_runtime"] == "nodejs"
+    assert host._state["ports"]["allocated"] == {"10000": "autoapp"}
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("git clone" in c for c in cmds)
+    assert any("docker build -t appgarden-autoapp" in c for c in cmds)
+
+    written = _staged_files(host)
+    dockerfiles = [v for k, v in written.items() if k.endswith("/Dockerfile")]
+    assert dockerfiles and "FROM node:22" in dockerfiles[0]
+    assert "npm start" in dockerfiles[0]
+
+# %%
+#|export
+def test_deploy_auto_local_detection(tmp_path):
+    """A local source detects the runtime from local files before uploading."""
+    (tmp_path / "requirements.txt").write_text("flask\n")
+    host = _stateful_host()
+
+    with patch("appgarden.auto_docker.ssh_connect") as mock_connect, \
+         patch("appgarden.auto_docker.upload_source", return_value="local"):
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        deploy_auto(_auto_server(), "pyapp", str(tmp_path),
+                    "python app.py", "py.apps.example.com")
+
+    entry = host._state["garden"]["apps"]["pyapp"]
+    assert entry["auto_detected_runtime"] == "python-pip"
+    written = _staged_files(host)
+    dockerfiles = [v for k, v in written.items() if k.endswith("/Dockerfile")]
+    assert dockerfiles and "FROM python:3.12" in dockerfiles[0]
+
+# %%
+#|export
+def test_deploy_auto_no_runtime_detected():
+    """When no indicator matches (locally or remotely), deploy_auto fails
+    loudly before claiming a port."""
+    host = _stateful_host()
+    inner = host.run_shell_command.side_effect
+
+    def _run(command="", **kw):
+        if command.startswith("test -f"):
+            out = MagicMock(); out.stdout = ""; out.stderr = ""
+            return (False, out)
+        return inner(command=command, **kw)
+    host.run_shell_command.side_effect = _run
+
+    with patch("appgarden.auto_docker.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="Could not detect runtime"):
+            deploy_auto(_auto_server(), "mystery", "https://github.com/x/y.git",
+                        "run", "m.apps.example.com")
+
+    # Failed before the port claim: nothing leaked
+    assert host._state["ports"]["allocated"] == {}

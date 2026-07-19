@@ -735,3 +735,47 @@ def test_deploy_static_with_exclude():
     garden = json.loads(written[garden_files[0]])
     assert garden["apps"]["mysite"]["exclude"] == ["node_modules", ".env"]
     assert garden["apps"]["mysite"]["gitignore"] is False
+
+# %% [markdown]
+# ## _write_env_file precedence and warnings
+
+# %%
+#|export
+def test_write_env_file_precedence(tmp_path):
+    """Layering is env_vars < env_file < env_overrides — the .env file is
+    line-based last-wins, so later sections must appear after earlier ones."""
+    envf = tmp_path / "envfile"
+    envf.write_text('B="from-file"\nC="from-file"\n')
+    host = _mock_host()
+
+    path = _write_env_file(host, "myapp",
+                           env_vars={"A": "config", "B": "config"},
+                           env_file=str(envf),
+                           env_overrides={"C": "cli"})
+    assert path.endswith("/myapp/.env")
+
+    written = _get_written_files(host)
+    content = next(v for k, v in written.items() if k.endswith("/.env"))
+    # env_file overrides toml env...
+    assert content.rindex('B="from-file"') > content.rindex('B="config"')
+    # ...and CLI overrides both
+    assert content.rindex('C="cli"') > content.rindex('C="from-file"')
+    assert 'A="config"' in content
+
+# %%
+#|export
+def test_write_env_file_missing_file_warns(capsys):
+    """A missing env_file warns (and deploys without it) rather than failing
+    silently — the warning names the resolved path."""
+    host = _mock_host()
+    _write_env_file(host, "myapp", env_vars={"A": "1"},
+                    env_file="/nonexistent/appgarden-env-xyz")
+    out = capsys.readouterr().out
+    assert "env_file not found" in out
+
+# %%
+#|export
+def test_write_env_file_nothing_to_write_returns_none():
+    host = _mock_host()
+    assert _write_env_file(host, "myapp") is None
+    host.put_file.assert_not_called()

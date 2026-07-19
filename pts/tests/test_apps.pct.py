@@ -491,3 +491,109 @@ def test_restart_app_updates_status():
     garden = _get_last_garden_write(host)
     assert garden is not None
     assert garden["apps"]["myapp"]["status"] == "active"
+
+# %% [markdown]
+# ## redeploy_app
+
+# %%
+#|export
+def _redeploy_garden(method="command", source_type="git", **extra_fields):
+    entry = {
+        "name": "myapp", "method": method, "url": "myapp.apps.example.com",
+        "routing": "subdomain", "port": 10000,
+        "source": "https://github.com/x/y.git", "source_type": source_type,
+        "status": "active", "created_at": "2026-01-01T00:00:00Z",
+    }
+    entry.update(extra_fields)
+    return {"apps": {"myapp": entry}}
+
+# %%
+#|export
+def test_redeploy_app_git_pull_with_branch():
+    """Git-sourced apps pull the stored branch, then restart the unit."""
+    state = _redeploy_garden(branch="main")
+    host = _mock_host(garden_state=state)
+    redeploy_app(_make_server(), host, "myapp")
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("git pull origin main" in c for c in cmds)
+    assert any("systemctl restart" in c and "appgarden-myapp" in c for c in cmds)
+
+# %%
+#|export
+def test_redeploy_app_git_pull_without_branch():
+    """Without a stored branch, a plain git pull runs."""
+    host = _mock_host(garden_state=_redeploy_garden())
+    redeploy_app(_make_server(), host, "myapp")
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any(c.endswith("git pull") or "git pull\n" in c for c in cmds), \
+        f"expected a plain git pull; cmds: {cmds}"
+
+# %%
+#|export
+def test_redeploy_app_local_reupload():
+    """Locally-sourced apps re-upload via rsync with the stored settings."""
+    state = _redeploy_garden(source_type="local", source="/tmp/src",
+                             exclude=["*.log"], gitignore=False)
+    host = _mock_host(garden_state=state)
+    with patch("appgarden.apps.upload_directory") as up:
+        redeploy_app(_make_server(), host, "myapp")
+    up.assert_called_once()
+    assert up.call_args.args[1] == "/tmp/src"
+    assert up.call_args.kwargs["exclude"] == ["*.log"]
+    assert up.call_args.kwargs["gitignore"] is False
+
+# %%
+#|export
+def test_redeploy_app_dockerfile_rebuilds_and_regenerates_compose():
+    """Dockerfile apps rebuild the image and regenerate docker-compose.yml with
+    the stored port/container_port and the prebuilt image (no 'build: .')."""
+    state = _redeploy_garden(method="dockerfile", container_port=8080)
+    host = _mock_host(garden_state=state)
+    redeploy_app(_make_server(), host, "myapp")
+
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("docker build -t appgarden-myapp" in c for c in cmds)
+
+    written = {}
+    for c in host.put_file.call_args_list:
+        bio = c.kwargs.get("filename_or_io")
+        if bio:
+            written[c.kwargs.get("remote_filename", "")] = bio.getvalue().decode("utf-8")
+    compose = [v for k, v in written.items() if k.endswith("docker-compose.yml")]
+    assert compose, f"expected a regenerated compose file; wrote: {list(written)}"
+    assert "image: appgarden-myapp" in compose[0]
+    assert "build: ." not in compose[0]
+    assert "127.0.0.1:10000:8080" in compose[0]
+
+# %%
+#|export
+def test_redeploy_app_static_reloads_caddy_only():
+    """Static apps get a Caddy reload, not a unit restart, and end 'serving'."""
+    host = _mock_host()  # SAMPLE_GARDEN's "docs" app is static, local source
+    with patch("appgarden.apps.upload_directory"):
+        redeploy_app(_make_server(), host, "docs")
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("reload" in c and "caddy" in c for c in cmds)
+    assert not any("systemctl restart" in c and "appgarden-docs" in c for c in cmds)
+    garden = _get_last_garden_write(host)
+    assert garden["apps"]["docs"]["status"] == "serving"
+
+# %%
+#|export
+def test_redeploy_app_updates_status_and_timestamp():
+    """The write-back marks the app active with a fresh updated_at."""
+    host = _mock_host(garden_state=_redeploy_garden(status="inactive"))
+    redeploy_app(_make_server(), host, "myapp")
+    garden = _get_last_garden_write(host)
+    entry = garden["apps"]["myapp"]
+    assert entry["status"] == "active"
+    assert entry["updated_at"] != "2026-01-01T00:00:00Z"
+
+# %%
+#|export
+def test_redeploy_app_unknown_raises():
+    """Redeploying an unregistered app raises ValueError."""
+    import pytest
+    host = _mock_host(garden_state={"apps": {}})
+    with pytest.raises(ValueError, match="not found"):
+        redeploy_app(_make_server(), host, "ghost")

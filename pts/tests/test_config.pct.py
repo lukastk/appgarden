@@ -416,3 +416,41 @@ skip = ["update", "ssh", "fail2ban"]
 """)
     loaded = load_config(p)
     assert loaded.servers["myserver"].init.skip == ["update", "ssh", "fail2ban"]
+
+# %% [markdown]
+# ## resolve_host error paths
+
+# %%
+#|export
+def test_resolve_host_hcloud_missing():
+    """A missing hcloud CLI is a clear install hint, not a traceback."""
+    import pytest
+    from unittest.mock import patch
+    srv = ServerConfig(ssh_user="root", ssh_key="k", domain="d",
+                       hcloud_name="box", hcloud_context="ctx")
+    with patch("appgarden.config.subprocess.run", side_effect=FileNotFoundError()):
+        with pytest.raises(ValueError, match="hcloud' CLI not found"):
+            resolve_host(srv)
+
+# %%
+#|export
+def test_resolve_host_hcloud_lookup_failure():
+    """A failed hcloud lookup surfaces the server name, context, and stderr."""
+    import pytest
+    import subprocess as _subprocess
+    from unittest.mock import patch
+    srv = ServerConfig(ssh_user="root", ssh_key="k", domain="d",
+                       hcloud_name="box", hcloud_context="ctx")
+    err = _subprocess.CalledProcessError(1, ["hcloud"], stderr="server not found")
+    with patch("appgarden.config.subprocess.run", side_effect=err):
+        with pytest.raises(ValueError, match="Failed to resolve IP.*box.*ctx") as excinfo:
+            resolve_host(srv)
+        assert "server not found" in str(excinfo.value)
+
+# %%
+#|export
+def test_resolve_host_requires_host_or_hcloud():
+    import pytest
+    srv = ServerConfig(ssh_user="root", ssh_key="k", domain="d")
+    with pytest.raises(ValueError, match="either 'host' or both"):
+        resolve_host(srv)

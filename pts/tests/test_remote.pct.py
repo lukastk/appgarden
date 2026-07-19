@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch, call
 
 from appgarden.remote import (
     read_remote_file, write_remote_file, run_remote_command,
-    read_garden_state, read_ports_state,
+    read_garden_state, read_ports_state, upload_directory,
     update_garden_state_locked, update_ports_state_locked, update_json_state_locked,
     GARDEN_STATE_PATH, PORTS_PATH, HOST_STATE_DIR, PRIVILEGED_HELPER_PATH,
     DEFAULT_APP_ROOT, RemoteContext, make_remote_context,
@@ -811,3 +811,83 @@ def test_upload_directory_exclude_and_gitignore():
     filter_idx = cmd.index("--filter")
     exclude_idx = cmd.index("--exclude")
     assert filter_idx < exclude_idx, "gitignore filter should come before exclude patterns"
+
+# %% [markdown]
+# ## upload_directory error hints
+
+# %%
+#|export
+def _upload_server():
+    return ServerConfig(ssh_user="deploy", ssh_key="~/.ssh/id_rsa",
+                        domain="apps.example.com", host="1.2.3.4")
+
+# %%
+#|export
+def test_upload_directory_rsync_missing(tmp_path):
+    """A missing rsync binary raises an install hint."""
+    import pytest
+    with patch("subprocess.run", side_effect=FileNotFoundError()):
+        with pytest.raises(RuntimeError, match="'rsync' is not installed"):
+            upload_directory(_upload_server(), str(tmp_path), "/srv/appgarden/apps/x/source")
+
+# %%
+#|export
+def test_upload_directory_ssh_failure_hints_ssh_agent(tmp_path):
+    """rsync exit 255 (SSH failure) points at ssh-agent for encrypted keys."""
+    import pytest
+    import subprocess as _subprocess
+    err = _subprocess.CalledProcessError(255, ["rsync"], output="", stderr="Connection closed")
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match="ssh-agent"):
+            upload_directory(_upload_server(), str(tmp_path), "/srv/appgarden/apps/x/source")
+
+# %%
+#|export
+def test_upload_directory_permission_denied_hints_init(tmp_path):
+    """rsync exit 23 with a permission error points at server init / chown."""
+    import pytest
+    import subprocess as _subprocess
+    err = _subprocess.CalledProcessError(
+        23, ["rsync"], output="",
+        stderr='rsync: mkstemp failed: Permission denied (13)')
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match="server init --include group"):
+            upload_directory(_upload_server(), str(tmp_path), "/srv/appgarden/apps/x/source")
+
+# %%
+#|export
+def test_upload_directory_generic_failure(tmp_path):
+    """Other rsync failures surface the exit code and stderr."""
+    import pytest
+    import subprocess as _subprocess
+    err = _subprocess.CalledProcessError(11, ["rsync"], output="", stderr="disk full")
+    with patch("subprocess.run", side_effect=err):
+        with pytest.raises(RuntimeError, match=r"rsync failed \(exit 11\): disk full"):
+            upload_directory(_upload_server(), str(tmp_path), "/srv/appgarden/apps/x/source")
+
+# %% [markdown]
+# ## Corrupted state file reads
+
+# %%
+#|export
+def test_read_garden_state_corrupted():
+    """Corrupt garden.json raises the re-run-init hint, not a raw JSON error."""
+    import pytest
+    host = MagicMock()
+    host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
+        filename_or_io.write(b"{not valid json") or True
+    )
+    with pytest.raises(RuntimeError, match="Corrupted garden.json"):
+        read_garden_state(host)
+
+# %%
+#|export
+def test_read_ports_state_corrupted():
+    """Corrupt ports.json raises the re-run-init hint."""
+    import pytest
+    host = MagicMock()
+    host.get_file.side_effect = lambda remote_filename, filename_or_io, **kw: (
+        filename_or_io.write(b"[1, 2,") or True
+    )
+    with pytest.raises(RuntimeError, match="Corrupted ports.json"):
+        read_ports_state(host)

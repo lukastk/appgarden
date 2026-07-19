@@ -369,3 +369,46 @@ def test_close_tunnel():
 
     # Should reload caddy
     assert any("reload caddy" in c for c in cmds)
+
+# %% [markdown]
+# ## _dir_server filters (tunnel --serve include/exclude)
+#
+# These decide which local files are exposed over a public tunnel URL, so the
+# matching semantics are security-relevant: excludes always win, includes
+# filter files only (directories stay traversable), and patterns match either
+# the path-relative-to-root or any individual path component.
+
+# %%
+#|export
+from appgarden._dir_server import _matches, _allowed
+
+# %%
+#|export
+def test_dir_server_matches_relpath_and_component():
+    assert _matches("docs/a.md", ["docs/*.md"])          # relpath glob
+    assert _matches("a/node_modules/b.js", ["node_modules"])  # any component
+    assert not _matches("a/b.js", ["node_modules"])
+    assert not _matches("a/b.js", [])                     # no patterns -> no match
+
+# %%
+#|export
+def test_dir_server_allowed_excludes_win():
+    """A file matching both include and exclude is hidden."""
+    assert not _allowed("/root/secret/key.md", "/root",
+                        includes=["*.md"], excludes=["secret"], is_dir=False)
+
+# %%
+#|export
+def test_dir_server_allowed_dirs_ignore_includes():
+    """Directories ignore include filters so the tree stays traversable, but
+    still honour excludes."""
+    assert _allowed("/root/sub", "/root", includes=["*.md"], excludes=[], is_dir=True)
+    assert not _allowed("/root/sub", "/root", includes=[], excludes=["sub"], is_dir=True)
+
+# %%
+#|export
+def test_dir_server_allowed_include_filters_files():
+    assert _allowed("/root/a.md", "/root", includes=["*.md"], excludes=[], is_dir=False)
+    assert not _allowed("/root/a.py", "/root", includes=["*.md"], excludes=[], is_dir=False)
+    # The root itself is always allowed
+    assert _allowed("/root", "/root", includes=["*.md"], excludes=["x"], is_dir=True)
