@@ -23,6 +23,8 @@ from nblite import nbl_export; nbl_export();
 import json
 from unittest.mock import patch, MagicMock, call
 
+import pytest
+
 from appgarden.config import ServerConfig
 from appgarden.remote import RemoteContext, PORTS_PATH, HOST_STATE_DIR
 from appgarden.ports import empty_ports_state
@@ -67,6 +69,10 @@ def _make_host_mock(*, state_files_exist=True, caddyfile_content="",
     def run_shell_side_effect(**kwargs):
         import hashlib
         cmd = kwargs.get("command", "")
+        # /etc/caddy/Caddyfile always exists in this mock; state_files_exist
+        # only governs the garden/ports state files.
+        if cmd.startswith("test -f") and "Caddyfile" in cmd:
+            return (True, ok_output)
         if cmd.startswith("test -f") and not state_files_exist:
             return (False, fail_output)
         if cmd.startswith("cat /etc/caddy/Caddyfile"):
@@ -385,6 +391,30 @@ def test_caddyfile_block_reinit_replaces_only_that_root():
     assert again.count("# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden\n") == 1
     assert again.count("# BEGIN APPGARDEN MANAGED BLOCK: /srv/appgarden-proto\n") == 1
     assert "import /srv/appgarden-proto/caddy/apps/*.caddy" in again
+
+# %%
+#|export
+def test_caddyfile_block_transient_read_failure_does_not_clobber():
+    """If the Caddyfile exists but reading it fails (sudo misconfig, timeout),
+    the failure must propagate — NOT be treated as 'file missing', which would
+    rewrite the Caddyfile with only this garden's block and destroy other
+    gardens' import lines and manual config (issue #20)."""
+    writes = []
+
+    def fake_run(host, cmd, ctx=None):
+        if cmd.startswith("test -f"):
+            return ""  # file exists
+        raise RuntimeError("Remote command failed: cat: sudo: a password is required")
+
+    def fake_write(host, path, content, ctx=None):
+        writes.append((path, content))
+
+    with patch("appgarden.server.run_sudo_command", side_effect=fake_run), \
+         patch("appgarden.server.write_system_file", side_effect=fake_write):
+        with pytest.raises(RuntimeError, match="password is required"):
+            _ensure_caddyfile_block(None, "import x\n", ctx=RemoteContext())
+
+    assert writes == [], f"Caddyfile must not be rewritten on a failed read; wrote: {writes}"
 
 # %%
 #|export

@@ -116,13 +116,19 @@ def _ensure_caddyfile_block(host, block_content: str, ctx: RemoteContext | None 
     begin, end = _caddyfile_markers(app_root)
     managed_block = f"{begin}\n{block_content}{end}\n"
 
-    # Try to read existing Caddyfile
+    # Probe existence explicitly: only a genuinely absent Caddyfile may be
+    # created from scratch. Treating any read failure as "missing" would let a
+    # transient error (sudo misconfig, timeout) clobber the whole Caddyfile —
+    # including other gardens' managed blocks and manual config (issue #20).
     try:
-        current = run_sudo_command(host, f"cat {shlex.quote(caddyfile_path)}", ctx=ctx)
+        run_sudo_command(host, f"test -f {shlex.quote(caddyfile_path)}", ctx=ctx)
     except RuntimeError:
         # File doesn't exist yet — just write the block
         write_system_file(host, caddyfile_path, managed_block, ctx=ctx)
         return
+
+    # File exists: the read must succeed; any failure here is fatal.
+    current = run_sudo_command(host, f"cat {shlex.quote(caddyfile_path)}", ctx=ctx)
 
     # Find this instance's keyed block; fall back to a legacy un-keyed block when
     # migrating the default instance from a pre-multi-instance Caddyfile.
