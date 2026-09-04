@@ -345,6 +345,14 @@ def open_tunnel(
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
+        # Without this, a remote bind that fails is only a warning: ssh stays up
+        # holding a tunnel that forwards nothing, and Caddy proxies the URL into
+        # a black hole (or onto whatever else holds the port) for as long as the
+        # session lives. It happens for real — an ssh orphaned by a hard-killed
+        # `tunnel open` keeps its old remote port bound after the allocation has
+        # been released, so the next tunnel can be handed that very port. Exiting
+        # instead turns that into a loud failure a caller can retry.
+        "-o", "ExitOnForwardFailure=yes",
         f"{server.ssh_user}@{host_ip}",
     ]
 

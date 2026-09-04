@@ -413,6 +413,36 @@ def test_open_tunnel_without_replace_leaves_prior_registration():
     mock_close.assert_not_called()
 
 # %% [markdown]
+# ## The reverse-tunnel ssh invocation
+
+# %%
+#|export
+def test_open_tunnel_ssh_exits_on_forward_failure():
+    """A remote bind that fails must kill the ssh, not leave it forwarding
+    nothing while Caddy still proxies the URL at it."""
+    captured = {}
+
+    def _popen(argv, *a, **kw):
+        captured["argv"] = argv
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    with patch("appgarden.tunnel.ssh_connect") as mock_connect, \
+         patch("appgarden.tunnel._deploy_tunnel_caddy"), \
+         patch("appgarden.tunnel._cleanup_tunnel"), \
+         patch("appgarden.tunnel.subprocess.Popen", side_effect=_popen):
+        host = _mock_host()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        open_tunnel(_make_server(), 3000, "t.example.com")
+
+    argv = captured["argv"]
+    assert "ExitOnForwardFailure=yes" in argv
+    assert argv[argv.index("ExitOnForwardFailure=yes") - 1] == "-o"
+
+# %% [markdown]
 # ## close_tunnel
 
 # %%
