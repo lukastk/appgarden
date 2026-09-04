@@ -242,3 +242,62 @@ def test_tunnel_open_subdomain_builds_url(tmp_path):
     assert result.exit_code == 0, result.output
     url = mock_open.call_args.args[2]
     assert url == "foo.apps.example.com"
+
+# %%
+#|export
+def test_tunnel_open_replace_requires_url_or_subdomain():
+    """--replace with a generated subdomain could never match anything, so it
+    is refused rather than silently replacing nothing."""
+    result, mock_open = _run_tunnel("3000", "--replace")
+    assert result.exit_code == 1
+    assert "--replace requires" in result.output
+    mock_open.assert_not_called()
+
+# %%
+#|export
+def test_tunnel_open_replace_passed_through():
+    """--replace reaches open_tunnel; without it the default stays False."""
+    result, mock_open = _run_tunnel("3000", "--url", "t.example.com", "--replace")
+    assert result.exit_code == 0, result.output
+    assert mock_open.call_args.kwargs["replace"] is True
+
+    result, mock_open = _run_tunnel("3000", "--url", "t.example.com")
+    assert result.exit_code == 0, result.output
+    assert mock_open.call_args.kwargs["replace"] is False
+
+# %% [markdown]
+# ## tunnel list --json
+
+# %%
+#|export
+def test_tunnel_list_json_emits_parsable_array():
+    """--json is the scripting surface: parsable output, no rich decoration."""
+    import json as _json
+    from appgarden.tunnel import TunnelInfo
+
+    tunnels = [TunnelInfo(tunnel_id="tunnel-abc", url="t.example.com",
+                          local_port=3000, remote_port=10000, created_at="2026-01-01")]
+    with patch("appgarden.cli.load_config", return_value=_make_cfg()), \
+         patch("appgarden.cli.ssh_connect"), \
+         patch("appgarden.cli.list_tunnels", return_value=tunnels):
+        result = runner.invoke(app, ["tunnel", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    parsed = _json.loads(result.output)
+    assert parsed == [{"tunnel_id": "tunnel-abc", "url": "t.example.com",
+                       "local_port": 3000, "remote_port": 10000, "created_at": "2026-01-01"}]
+
+# %%
+#|export
+def test_tunnel_list_json_empty_is_empty_array():
+    """No tunnels is an empty array, not the human 'No active tunnels.' line —
+    a caller parsing the output must not have to special-case it."""
+    import json as _json
+
+    with patch("appgarden.cli.load_config", return_value=_make_cfg()), \
+         patch("appgarden.cli.ssh_connect"), \
+         patch("appgarden.cli.list_tunnels", return_value=[]):
+        result = runner.invoke(app, ["tunnel", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert _json.loads(result.output) == []

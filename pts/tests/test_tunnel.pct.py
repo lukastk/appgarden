@@ -33,6 +33,7 @@ from appgarden.tunnel import (
     _tunnel_caddy_path, _deploy_tunnel_caddy,
     _remove_tunnel_caddy, _register_tunnel, _unregister_tunnel,
     list_tunnels, close_tunnel, open_tunnel,
+    _close_tunnels_for_url,
     TUNNELS_STATE_FILE, TunnelInfo,
 )
 
@@ -344,6 +345,72 @@ def test_open_tunnel_setup_failure_releases_port():
     assert state["ports"]["allocated"] == {}
     # And no tunnel was registered
     assert state["tunnels"]["tunnels"] == {}
+
+# %% [markdown]
+# ## --replace: reclaiming a URL a dead run still holds
+#
+# A tunnel's Caddy snippet is keyed by its own id, so a run killed without
+# cleanup leaves a snippet claiming the hostname and the next open for the
+# same URL fails Caddy's reload. `replace` is what lets a supervised service
+# get its own URL back.
+
+# %%
+#|export
+def test_close_tunnels_for_url_closes_only_matching():
+    """Only registrations whose url matches are closed."""
+    state = {"tunnels": {
+        "tunnel-old": {"url": "t.example.com", "local_port": 3000, "remote_port": 10000, "created_at": "x"},
+        "tunnel-other": {"url": "other.example.com", "local_port": 3001, "remote_port": 10001, "created_at": "x"},
+    }}
+    host = _mock_host(tunnels_state=state)
+    with patch("appgarden.tunnel.ssh_connect") as mock_connect:
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        closed = _close_tunnels_for_url(_make_server(), "t.example.com")
+
+    assert closed == ["tunnel-old"]
+    cmds = [c.kwargs.get("command", "") for c in host.run_shell_command.call_args_list]
+    assert any("rm -f" in c and "tunnel-old.caddy" in c for c in cmds)
+    assert not any("tunnel-other.caddy" in c for c in cmds)
+
+# %%
+#|export
+def test_open_tunnel_replace_closes_prior_registration():
+    """open_tunnel(replace=True) closes the stale claim before allocating."""
+    with patch("appgarden.tunnel._close_tunnels_for_url", return_value=["tunnel-old"]) as mock_close, \
+         patch("appgarden.tunnel.ssh_connect") as mock_connect, \
+         patch("appgarden.tunnel._deploy_tunnel_caddy", side_effect=RuntimeError("stop here")):
+        host = _mock_host()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="stop here"):
+            open_tunnel(_make_server(), 3000, "t.example.com", replace=True)
+
+    mock_close.assert_called_once()
+    assert mock_close.call_args.args[1] == "t.example.com"
+
+# %%
+#|export
+def test_open_tunnel_replace_requires_explicit_url():
+    """A generated subdomain can never match an existing tunnel, so silently
+    replacing nothing would hide the caller's mistake."""
+    with pytest.raises(ValueError, match="requires an explicit"):
+        open_tunnel(_make_server(), 3000, None, replace=True)
+
+# %%
+#|export
+def test_open_tunnel_without_replace_leaves_prior_registration():
+    """The default is unchanged: no stale-claim reaping unless asked for."""
+    with patch("appgarden.tunnel._close_tunnels_for_url") as mock_close, \
+         patch("appgarden.tunnel.ssh_connect") as mock_connect, \
+         patch("appgarden.tunnel._deploy_tunnel_caddy", side_effect=RuntimeError("stop here")):
+        host = _mock_host()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(RuntimeError, match="stop here"):
+            open_tunnel(_make_server(), 3000, "t.example.com")
+
+    mock_close.assert_not_called()
 
 # %% [markdown]
 # ## close_tunnel

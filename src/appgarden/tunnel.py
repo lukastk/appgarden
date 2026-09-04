@@ -159,7 +159,26 @@ def _cleanup_tunnel(server: ServerConfig, tunnel_id: str, app_name: str, ctx: Re
             pass
         _unregister_tunnel(host, tunnel_id, ctx=ctx)
 
-# %% pts/appgarden/09_tunnel.pct.py 23
+# %% pts/appgarden/09_tunnel.pct.py 22
+def _close_tunnels_for_url(server: ServerConfig, url: str, ctx: RemoteContext | None = None) -> list[str]:
+    """Close every registered tunnel already claiming *url*; returns the ids closed.
+
+    A tunnel's Caddy snippet is keyed by its (freshly minted) tunnel id, so a run
+    killed without cleanup — a reboot, a SIGKILL — leaves a snippet behind that
+    still claims the hostname. The next `open` for the same url then fails Caddy's
+    reload with "ambiguous site definition" and rolls itself back, so a supervised
+    service could never reclaim its own URL after a hard stop.
+    """
+    if ctx is None:
+        ctx = make_remote_context(server)
+    with ssh_connect(server) as host:
+        state = _read_tunnels_state(host, ctx=ctx)
+    stale = [tid for tid, data in state.get("tunnels", {}).items() if data.get("url") == url]
+    for tid in stale:
+        _cleanup_tunnel(server, tid, tid, ctx=ctx)
+    return stale
+
+# %% pts/appgarden/09_tunnel.pct.py 24
 def _spawn_serve(
     path: str,
     port: int,
@@ -216,7 +235,7 @@ def _spawn_serve(
 
     return subprocess.Popen(argv, start_new_session=True)
 
-# %% pts/appgarden/09_tunnel.pct.py 24
+# %% pts/appgarden/09_tunnel.pct.py 25
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """Send SIGTERM to a subprocess's process group, escalating to SIGKILL if needed."""
     try:
@@ -236,7 +255,7 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
         proc.wait()
 
-# %% pts/appgarden/09_tunnel.pct.py 25
+# %% pts/appgarden/09_tunnel.pct.py 26
 def open_tunnel(
     server: ServerConfig,
     local_port: int,
@@ -246,6 +265,7 @@ def open_tunnel(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     close_on_cmd_exit: bool = False,
+    replace: bool = False,
 ) -> None:
     """Open a tunnel: allocate port, configure Caddy, SSH reverse tunnel.
 
@@ -260,16 +280,27 @@ def open_tunnel(
     By default the tunnel stays up if the spawned process exits on its own; pass
     ``close_on_cmd_exit=True`` to tear down the tunnel as soon as it exits.
 
+    ``replace=True`` first closes any tunnel already registered against ``url``,
+    making the call idempotent — what a supervised service needs to reclaim its
+    own URL after a hard stop left the previous registration behind. It requires
+    an explicit ``url``.
+
     Blocks until Ctrl+C (or, with ``close_on_cmd_exit``, until the spawned
     process exits), then cleans up.
     """
     if cmd and serve:
         raise ValueError("`cmd` and `serve` are mutually exclusive")
+    if replace and url is None:
+        raise ValueError("`replace` requires an explicit `url` — a generated subdomain can never match an existing tunnel")
 
     if url is None:
         url = _random_subdomain(server.domain)
 
     ctx = make_remote_context(server)
+
+    if replace:
+        for tid in _close_tunnels_for_url(server, url, ctx=ctx):
+            console.print(f"[dim]Replaced tunnel {tid} already claiming {url}[/dim]")
     tunnel_id = f"tunnel-{uuid.uuid4().hex[:8]}"
     app_name = tunnel_id
     host_ip = resolve_host(server)
@@ -345,14 +376,14 @@ def open_tunnel(
         _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
         console.print("[green]Tunnel closed.[/green]")
 
-# %% pts/appgarden/09_tunnel.pct.py 27
+# %% pts/appgarden/09_tunnel.pct.py 28
 def close_tunnel(server: ServerConfig, tunnel_id: str) -> None:
     """Close a specific tunnel by ID (remote cleanup only)."""
     ctx = make_remote_context(server)
     app_name = tunnel_id
     _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
 
-# %% pts/appgarden/09_tunnel.pct.py 29
+# %% pts/appgarden/09_tunnel.pct.py 30
 def list_tunnels(host, ctx: RemoteContext | None = None) -> list[TunnelInfo]:
     """List all active tunnels from the server."""
     state = _read_tunnels_state(host, ctx=ctx)
@@ -367,7 +398,7 @@ def list_tunnels(host, ctx: RemoteContext | None = None) -> list[TunnelInfo]:
         ))
     return tunnels
 
-# %% pts/appgarden/09_tunnel.pct.py 31
+# %% pts/appgarden/09_tunnel.pct.py 32
 def cleanup_stale_tunnels(server: ServerConfig) -> list[str]:
     """Detect and remove tunnels whose SSH connections are dead.
 

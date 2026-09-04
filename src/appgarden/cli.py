@@ -1032,6 +1032,7 @@ def tunnel_open(
     include: list[str] = typer.Option([], "--include", help="Glob (repeatable). With --serve <dir>, only files matching at least one --include are exposed; matched against the path-relative-to-root or any path component"),
     exclude: list[str] = typer.Option([], "--exclude", help="Glob (repeatable). With --serve <dir>, files or directories matching any --exclude are hidden; matched against the path-relative-to-root or any path component"),
     close_on_cmd_exit: bool = typer.Option(False, "--close-on-cmd-exit", help="Close the tunnel automatically when --cmd / --serve exits (default: keep tunnel up)"),
+    replace: bool = typer.Option(False, "--replace", help="Close any tunnel already claiming this URL before opening (requires --url / --subdomain); makes a re-open idempotent after a hard stop left the old registration behind"),
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """Open a tunnel to expose a local port with HTTPS."""
@@ -1043,6 +1044,9 @@ def tunnel_open(
         raise typer.Exit(code=1)
     if url and subdomain:
         console.print("[red]Error:[/red] --url and --subdomain are mutually exclusive")
+        raise typer.Exit(code=1)
+    if replace and not (url or subdomain):
+        console.print("[red]Error:[/red] --replace requires --url or --subdomain (a generated subdomain can never match an existing tunnel)")
         raise typer.Exit(code=1)
     if serve and not os.path.exists(os.path.expanduser(serve)):
         console.print(f"[red]Error:[/red] --serve path does not exist: {serve}")
@@ -1069,14 +1073,18 @@ def tunnel_open(
             _s.bind(("127.0.0.1", 0))
             local_port = _s.getsockname()[1]
 
-    open_tunnel(srv, local_port, url, cmd=cmd, serve=serve, include=include, exclude=exclude, close_on_cmd_exit=close_on_cmd_exit)
+    open_tunnel(srv, local_port, url, cmd=cmd, serve=serve, include=include, exclude=exclude, close_on_cmd_exit=close_on_cmd_exit, replace=replace)
 
 # %% pts/appgarden/10_cli.pct.py 58
 @tunnel_app.command("list")
 def tunnel_list(
+    as_json: bool = typer.Option(False, "--json", help="Emit the tunnels as a JSON array instead of a table (for scripting)"),
     server: Optional[str] = typer.Option(None, "--server", "-s", envvar="APPGARDEN_SERVER", help="Server name"),
 ):
     """List active tunnels."""
+    import json as _json
+    from dataclasses import asdict
+
     cfg = load_config()
     try:
         sname, srv = get_server(cfg, server)
@@ -1086,6 +1094,11 @@ def tunnel_list(
 
     with ssh_connect(srv) as host:
         tunnels = list_tunnels(host)
+
+    if as_json:
+        # print(), not console.print(): rich would wrap/highlight the payload.
+        print(_json.dumps([asdict(t) for t in tunnels], indent=2))
+        raise typer.Exit()
 
     if not tunnels:
         console.print("No active tunnels.")

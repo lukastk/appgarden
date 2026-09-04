@@ -317,12 +317,20 @@ appgarden tunnel open 3000 --cmd "npm run dev" --close-on-cmd-exit
 appgarden tunnel open --serve ./dist --subdomain docs-preview
 appgarden tunnel open --serve ./dist --include "*.html" --exclude "node_modules"
 
+# Reclaim a URL a dead run still holds, then open (idempotent re-open)
+appgarden tunnel open 3000 --url preview.apps.example.com --replace
+
 appgarden tunnel list [-s server]
+appgarden tunnel list --json [-s server]      # machine-readable, for scripting
 appgarden tunnel close <tunnel-id> [-s server]
 appgarden tunnel cleanup [-s server]
 ```
 
 `--cmd` and `--serve` are mutually exclusive. `--include`/`--exclude` only apply when `--serve` points to a directory. Tunnels allocate a remote port, write a Caddy snippet under `caddy/tunnels`, and register state in `tunnels/active.json`; cleanup removes those resources.
+
+**`--replace` is what makes an unattended re-open work.** A tunnel's Caddy snippet is keyed by its own tunnel id, so a run killed without cleanup (a reboot, a `SIGKILL`) leaves a snippet still claiming the hostname; the next `tunnel open` for the same `--url` then fails Caddy's reload with *ambiguous site definition* and rolls itself back. `--replace` closes any tunnel already registered against that URL first. It requires an explicit `--url`/`--subdomain` — with a generated subdomain there is nothing it could match, so it is refused rather than silently doing nothing. Note `tunnel cleanup` is not a substitute: it only reaps tunnels whose remote port has nothing listening.
+
+`tunnel list --json` emits a JSON array (empty when there are no tunnels, never the human "No active tunnels." line) — parse that rather than the table.
 
 ## Troubleshooting workflow
 

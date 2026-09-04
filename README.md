@@ -366,8 +366,12 @@ Expose a locally running app through your server with HTTPS:
 # Start a tunnel (blocks until Ctrl+C)
 appgarden tunnel open 3000 --url myapp.apps.example.com
 
+# Reclaim a URL a dead run still holds, then open (idempotent re-open)
+appgarden tunnel open 3000 --url myapp.apps.example.com --replace
+
 # List active tunnels
 appgarden tunnel list
+appgarden tunnel list --json     # machine-readable, for scripting
 
 # Close a specific tunnel
 appgarden tunnel close tunnel-abc12345
@@ -377,6 +381,8 @@ appgarden tunnel cleanup
 ```
 
 This opens an SSH reverse tunnel and configures Caddy as a reverse proxy with automatic HTTPS. Useful for demos, webhook testing, or sharing work-in-progress.
+
+A tunnel's Caddy snippet is keyed by its own tunnel id, so a run that dies without cleaning up (a reboot, a `SIGKILL`) leaves a snippet still claiming the hostname — and the next `tunnel open` for the same `--url` fails Caddy's reload with *ambiguous site definition*. `--replace` closes any tunnel already registered against the URL first, which is what makes a re-open safe to run unattended (a supervised service, a restart loop). It requires an explicit `--url`/`--subdomain`, since a generated subdomain can never match an existing tunnel.
 
 ## CLI Reference
 
@@ -433,8 +439,8 @@ appgarden apps meta remove <name> KEY [KEY ...] [-s server]
 ### Tunnels
 
 ```bash
-appgarden tunnel open <local-port> --url <url> [-s server]
-appgarden tunnel list [-s server]
+appgarden tunnel open <local-port> --url <url> [--replace] [-s server]
+appgarden tunnel list [--json] [-s server]
 appgarden tunnel close <tunnel-id> [-s server]
 appgarden tunnel cleanup [-s server]
 ```
