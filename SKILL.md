@@ -330,6 +330,8 @@ appgarden tunnel cleanup [-s server]
 
 **`--replace` is what makes an unattended re-open work.** A tunnel's Caddy snippet is keyed by its own tunnel id, so a run killed without cleanup (a reboot, a `SIGKILL`) leaves a snippet still claiming the hostname; the next `tunnel open` for the same `--url` then fails Caddy's reload with *ambiguous site definition* and rolls itself back. `--replace` closes any tunnel already registered against that URL first. It requires an explicit `--url`/`--subdomain` — with a generated subdomain there is nothing it could match, so it is refused rather than silently doing nothing. Note `tunnel cleanup` is not a substitute: it only reaps tunnels whose remote port has nothing listening.
 
+A tunnel closes cleanly on **SIGTERM** as well as Ctrl+C, so a supervised `stop` (supervisord, systemd, `docker stop`) releases the registration, the Caddy snippet and the remote port instead of stranding them.
+
 `tunnel list --json` emits a JSON array (empty when there are no tunnels, never the human "No active tunnels." line) — parse that rather than the table.
 
 ## Troubleshooting workflow

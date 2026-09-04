@@ -311,6 +311,12 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 # %%
 #|export
+def _sigterm_as_interrupt(signum, frame):
+    """Turn SIGTERM into KeyboardInterrupt so shutdown takes the Ctrl+C path."""
+    raise KeyboardInterrupt
+
+# %%
+#|export
 def open_tunnel(
     server: ServerConfig,
     local_port: int,
@@ -411,6 +417,13 @@ def open_tunnel(
         f"{server.ssh_user}@{host_ip}",
     ]
 
+    # SIGTERM is what a process supervisor (supervisord, systemd, docker stop)
+    # sends, and Python's default action for it is to die on the spot — no
+    # unwinding, so the `finally` below never runs and the tunnel's registration
+    # and Caddy snippet are left claiming the hostname. Route it into the same
+    # KeyboardInterrupt path Ctrl+C already takes so a supervised stop cleans up.
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm_as_interrupt)
+
     proc = None
     try:
         proc = subprocess.Popen(ssh_cmd)
@@ -431,6 +444,7 @@ def open_tunnel(
     except KeyboardInterrupt:
         console.print("\n[yellow]Closing tunnel...[/yellow]")
     finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
         if cmd_proc is not None and cmd_proc.poll() is None:
             _kill_process_group(cmd_proc)
         if proc and proc.poll() is None:

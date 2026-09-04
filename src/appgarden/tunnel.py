@@ -256,6 +256,11 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 # %% pts/appgarden/09_tunnel.pct.py 26
+def _sigterm_as_interrupt(signum, frame):
+    """Turn SIGTERM into KeyboardInterrupt so shutdown takes the Ctrl+C path."""
+    raise KeyboardInterrupt
+
+# %% pts/appgarden/09_tunnel.pct.py 27
 def open_tunnel(
     server: ServerConfig,
     local_port: int,
@@ -356,6 +361,13 @@ def open_tunnel(
         f"{server.ssh_user}@{host_ip}",
     ]
 
+    # SIGTERM is what a process supervisor (supervisord, systemd, docker stop)
+    # sends, and Python's default action for it is to die on the spot — no
+    # unwinding, so the `finally` below never runs and the tunnel's registration
+    # and Caddy snippet are left claiming the hostname. Route it into the same
+    # KeyboardInterrupt path Ctrl+C already takes so a supervised stop cleans up.
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm_as_interrupt)
+
     proc = None
     try:
         proc = subprocess.Popen(ssh_cmd)
@@ -376,6 +388,7 @@ def open_tunnel(
     except KeyboardInterrupt:
         console.print("\n[yellow]Closing tunnel...[/yellow]")
     finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
         if cmd_proc is not None and cmd_proc.poll() is None:
             _kill_process_group(cmd_proc)
         if proc and proc.poll() is None:
@@ -384,14 +397,14 @@ def open_tunnel(
         _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
         console.print("[green]Tunnel closed.[/green]")
 
-# %% pts/appgarden/09_tunnel.pct.py 28
+# %% pts/appgarden/09_tunnel.pct.py 29
 def close_tunnel(server: ServerConfig, tunnel_id: str) -> None:
     """Close a specific tunnel by ID (remote cleanup only)."""
     ctx = make_remote_context(server)
     app_name = tunnel_id
     _cleanup_tunnel(server, tunnel_id, app_name, ctx=ctx)
 
-# %% pts/appgarden/09_tunnel.pct.py 30
+# %% pts/appgarden/09_tunnel.pct.py 31
 def list_tunnels(host, ctx: RemoteContext | None = None) -> list[TunnelInfo]:
     """List all active tunnels from the server."""
     state = _read_tunnels_state(host, ctx=ctx)
@@ -406,7 +419,7 @@ def list_tunnels(host, ctx: RemoteContext | None = None) -> list[TunnelInfo]:
         ))
     return tunnels
 
-# %% pts/appgarden/09_tunnel.pct.py 32
+# %% pts/appgarden/09_tunnel.pct.py 33
 def cleanup_stale_tunnels(server: ServerConfig) -> list[str]:
     """Detect and remove tunnels whose SSH connections are dead.
 

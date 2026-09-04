@@ -22,6 +22,7 @@ from nblite import nbl_export; nbl_export();
 # %%
 #|export
 import json
+import signal
 from unittest.mock import MagicMock, patch
 from io import BytesIO
 
@@ -441,6 +442,46 @@ def test_open_tunnel_ssh_exits_on_forward_failure():
     argv = captured["argv"]
     assert "ExitOnForwardFailure=yes" in argv
     assert argv[argv.index("ExitOnForwardFailure=yes") - 1] == "-o"
+
+# %%
+#|export
+def test_open_tunnel_cleans_up_on_sigterm():
+    """A supervised stop sends SIGTERM. Python's default action for it is to die
+    without unwinding, which would leave the registration and the Caddy snippet
+    claiming the hostname; it has to take the same path as Ctrl+C."""
+    before = signal.getsignal(signal.SIGTERM)
+    installed = {}
+
+    def _popen(argv, *a, **kw):
+        proc = MagicMock()
+        installed["handler"] = signal.getsignal(signal.SIGTERM)
+
+        # What the kernel does to us once a supervisor decides to stop — once:
+        # the teardown's own proc.wait() must be allowed to return.
+        def _wait(*_a, **_kw):
+            if installed.pop("pending", None):
+                installed["handler"](signal.SIGTERM, None)
+            return 0
+
+        installed["pending"] = True
+        proc.wait.side_effect = _wait
+        proc.poll.return_value = None
+        return proc
+
+    with patch("appgarden.tunnel.ssh_connect") as mock_connect, \
+         patch("appgarden.tunnel._deploy_tunnel_caddy"), \
+         patch("appgarden.tunnel._cleanup_tunnel") as mock_cleanup, \
+         patch("appgarden.tunnel.subprocess.Popen", side_effect=_popen):
+        host = _mock_host()
+        mock_connect.return_value.__enter__ = MagicMock(return_value=host)
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        # Returns normally: the KeyboardInterrupt is caught, not propagated.
+        open_tunnel(_make_server(), 3000, "t.example.com")
+
+    assert installed["handler"] is not before
+    mock_cleanup.assert_called_once()
+    # And the handler is put back, so a library caller isn't left with ours.
+    assert signal.getsignal(signal.SIGTERM) is before
 
 # %% [markdown]
 # ## close_tunnel
